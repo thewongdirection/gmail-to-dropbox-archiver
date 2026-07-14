@@ -1,0 +1,12 @@
+# clasp / local Apps Script tooling
+.clasp.json
+.clasprc.json
+
+# Never commit secrets
+*.local
+secrets.json
+.env
+
+# OS / editor cruft
+.DS_Store
+node_modules/
