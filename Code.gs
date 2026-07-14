@@ -23,6 +23,7 @@
  *   PROCESSED_LABEL        Label applied after archiving      (default "Archived/Dropbox")
  *   MAX_THREADS_PER_RUN    Safety cap per execution           (default "40")
  *   INCLUDE_ATTACHMENTS    "true"/"false"                     (default "true")
+ *   RUN_SUMMARY_EMAIL      Address to email a per-run digest; blank = off (default "")
  */
 function getConfig_() {
   var props = PropertiesService.getScriptProperties();
@@ -43,7 +44,8 @@ function getConfig_() {
     dropboxFolder: (p.DROPBOX_FOLDER || '/Gmail Archive').replace(/\/+$/, ''),
     processedLabel: p.PROCESSED_LABEL || 'Archived/Dropbox',
     maxThreads: parseInt(p.MAX_THREADS_PER_RUN || '40', 10),
-    includeAttachments: (p.INCLUDE_ATTACHMENTS || 'true').toLowerCase() !== 'false'
+    includeAttachments: (p.INCLUDE_ATTACHMENTS || 'true').toLowerCase() !== 'false',
+    summaryEmail: (p.RUN_SUMMARY_EMAIL || '').trim()
   };
 }
 
@@ -65,6 +67,7 @@ function archiveLabeledEmails() {
 
   var archivedThreads = 0;
   var archivedFiles = 0;
+  var errors = [];
 
   for (var t = 0; t < threads.length; t++) {
     var thread = threads[t];
@@ -79,11 +82,53 @@ function archiveLabeledEmails() {
     } catch (err) {
       // Leave the thread untagged so the next run retries it.
       Logger.log('ERROR archiving thread "%s": %s', safeSubject_(thread), err);
+      errors.push({ subject: safeSubject_(thread), error: String(err) });
     }
   }
 
-  Logger.log('Done. Archived %s file(s) across %s thread(s).', archivedFiles, archivedThreads);
-  return { threads: archivedThreads, files: archivedFiles };
+  Logger.log('Done. Archived %s file(s) across %s thread(s). %s error(s).',
+    archivedFiles, archivedThreads, errors.length);
+
+  var summary = {
+    found: threads.length,
+    threads: archivedThreads,
+    files: archivedFiles,
+    errors: errors
+  };
+  maybeSendSummary_(cfg, summary);
+  return summary;
+}
+
+/**
+ * Email a short per-run digest when RUN_SUMMARY_EMAIL is configured. Never
+ * throws — a failed notification must not fail the archive run itself.
+ */
+function maybeSendSummary_(cfg, summary) {
+  if (!cfg.summaryEmail) return;
+  // Skip the "nothing happened, no errors" case to avoid daily inbox noise.
+  if (summary.found === 0 && summary.errors.length === 0) return;
+
+  try {
+    var lines = [
+      'Gmail → Dropbox archive run complete.',
+      '',
+      'Threads found:    ' + summary.found,
+      'Threads archived: ' + summary.threads,
+      'Files uploaded:   ' + summary.files,
+      'Errors:           ' + summary.errors.length
+    ];
+    if (summary.errors.length) {
+      lines.push('', 'Failed threads (will retry next run):');
+      summary.errors.forEach(function (e) {
+        lines.push('  • ' + e.subject + ' — ' + e.error);
+      });
+    }
+    var subject = 'Gmail→Dropbox archive: ' + summary.files + ' file(s), ' +
+      summary.errors.length + ' error(s)';
+    MailApp.sendEmail(cfg.summaryEmail, subject, lines.join('\n'));
+  } catch (err) {
+    Logger.log('Could not send run summary email: %s', err);
+  }
 }
 
 /**
@@ -155,12 +200,17 @@ function row_(label, value) {
  * DROPBOX
  * ======================================================================== */
 
+// Chunk size for upload sessions. Also the ceiling for a single-request upload:
+// anything larger is streamed in chunks. Kept well under Apps Script's ~50 MB
+// UrlFetchApp payload limit so each request stays comfortably in bounds.
+var DROPBOX_CHUNK_BYTES = 8 * 1024 * 1024; // 8 MB
+
 /**
  * Exchange the long-lived refresh token for a short-lived access token.
  * Refresh tokens do not expire, so the daily trigger keeps working forever.
  */
 function getDropboxAccessToken_(cfg) {
-  var res = UrlFetchApp.fetch('https://api.dropboxapi.com/oauth2/token', {
+  var res = fetchWithRetry_('https://api.dropboxapi.com/oauth2/token', {
     method: 'post',
     muteHttpExceptions: true,
     payload: {
@@ -179,20 +229,33 @@ function getDropboxAccessToken_(cfg) {
 }
 
 /**
- * Upload a blob to Dropbox using the (small-file) files/upload endpoint.
+ * Upload a blob to Dropbox. Small files go through the single-request
+ * files/upload endpoint; anything larger than one chunk is streamed via an
+ * upload session (start → append → finish) so oversized attachments don't
+ * blow past Dropbox's 150 MB single-request cap or Apps Script's payload limit.
  * mode=add + autorename avoids clobbering if the same path already exists.
- * Note: this endpoint is for files up to 150 MB; that's ample for emails.
  */
 function uploadToDropbox_(accessToken, dropboxPath, blob) {
+  var bytes = blob.getBytes();
+  var path = normalizeDropboxPath_(dropboxPath);
+  if (bytes.length > DROPBOX_CHUNK_BYTES) {
+    uploadLargeToDropbox_(accessToken, path, bytes);
+  } else {
+    uploadSmallToDropbox_(accessToken, path, bytes);
+  }
+}
+
+/** Single-request upload for files that fit in one chunk. */
+function uploadSmallToDropbox_(accessToken, path, bytes) {
   var apiArg = {
-    path: normalizeDropboxPath_(dropboxPath),
+    path: path,
     mode: 'add',
     autorename: true,
     mute: true,
     strict_conflict: false
   };
 
-  var res = UrlFetchApp.fetch('https://content.dropboxapi.com/2/files/upload', {
+  var res = fetchWithRetry_('https://content.dropboxapi.com/2/files/upload', {
     method: 'post',
     contentType: 'application/octet-stream',
     muteHttpExceptions: true,
@@ -200,14 +263,129 @@ function uploadToDropbox_(accessToken, dropboxPath, blob) {
       Authorization: 'Bearer ' + accessToken,
       'Dropbox-API-Arg': toDropboxApiArg_(apiArg)
     },
-    payload: blob.getBytes()
+    payload: bytes
   });
 
   var code = res.getResponseCode();
   if (code !== 200) {
-    throw new Error('Dropbox upload failed (' + code + ') for ' + dropboxPath +
+    throw new Error('Dropbox upload failed (' + code + ') for ' + path +
       ': ' + res.getContentText());
   }
+}
+
+/** Chunked upload session for files larger than a single chunk. */
+function uploadLargeToDropbox_(accessToken, path, bytes) {
+  var total = bytes.length;
+
+  // 1) start — send the first chunk, keep the session open.
+  var firstEnd = Math.min(DROPBOX_CHUNK_BYTES, total);
+  var startRes = fetchWithRetry_('https://content.dropboxapi.com/2/files/upload_session/start', {
+    method: 'post',
+    contentType: 'application/octet-stream',
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: 'Bearer ' + accessToken,
+      'Dropbox-API-Arg': toDropboxApiArg_({ close: false })
+    },
+    payload: bytes.slice(0, firstEnd)
+  });
+  if (startRes.getResponseCode() !== 200) {
+    throw new Error('Dropbox upload_session/start failed (' + startRes.getResponseCode() +
+      ') for ' + path + ': ' + startRes.getContentText());
+  }
+  var sessionId = JSON.parse(startRes.getContentText()).session_id;
+  var offset = firstEnd;
+
+  // 2) append — stream the middle chunks.
+  while (total - offset > DROPBOX_CHUNK_BYTES) {
+    var end = offset + DROPBOX_CHUNK_BYTES;
+    var appendRes = fetchWithRetry_('https://content.dropboxapi.com/2/files/upload_session/append_v2', {
+      method: 'post',
+      contentType: 'application/octet-stream',
+      muteHttpExceptions: true,
+      headers: {
+        Authorization: 'Bearer ' + accessToken,
+        'Dropbox-API-Arg': toDropboxApiArg_({
+          cursor: { session_id: sessionId, offset: offset },
+          close: false
+        })
+      },
+      payload: bytes.slice(offset, end)
+    });
+    if (appendRes.getResponseCode() !== 200) {
+      throw new Error('Dropbox upload_session/append failed (' + appendRes.getResponseCode() +
+        ') for ' + path + ': ' + appendRes.getContentText());
+    }
+    offset = end;
+  }
+
+  // 3) finish — send the last chunk and commit to the final path.
+  var finishRes = fetchWithRetry_('https://content.dropboxapi.com/2/files/upload_session/finish', {
+    method: 'post',
+    contentType: 'application/octet-stream',
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: 'Bearer ' + accessToken,
+      'Dropbox-API-Arg': toDropboxApiArg_({
+        cursor: { session_id: sessionId, offset: offset },
+        commit: { path: path, mode: 'add', autorename: true, mute: true, strict_conflict: false }
+      })
+    },
+    payload: bytes.slice(offset, total)
+  });
+  if (finishRes.getResponseCode() !== 200) {
+    throw new Error('Dropbox upload_session/finish failed (' + finishRes.getResponseCode() +
+      ') for ' + path + ': ' + finishRes.getContentText());
+  }
+}
+
+/**
+ * UrlFetchApp wrapper that retries transient Dropbox failures — HTTP 429
+ * (rate limited) and 5xx (server) — with exponential backoff plus jitter,
+ * honoring the Retry-After header when present. Returns the final response;
+ * the caller inspects the status code for non-retryable errors.
+ */
+function fetchWithRetry_(url, params) {
+  var MAX_ATTEMPTS = 5;
+  var res;
+  for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    res = UrlFetchApp.fetch(url, params);
+    var code = res.getResponseCode();
+    if (code !== 429 && code < 500) return res;   // success or non-retryable
+    if (attempt === MAX_ATTEMPTS) return res;      // out of retries; let caller handle
+    var waitMs = retryDelayMs_(res, attempt);
+    Logger.log('Transient HTTP %s from %s — retry %s/%s in %s ms',
+      code, url, attempt, MAX_ATTEMPTS, waitMs);
+    Utilities.sleep(waitMs);
+  }
+  return res;
+}
+
+/**
+ * Backoff delay for a retry: prefer the server's Retry-After header, else
+ * exponential (1s, 2s, 4s, 8s…) capped at 32s, with up to 1s of jitter.
+ */
+function retryDelayMs_(res, attempt) {
+  var retryAfter = headerValue_(res, 'Retry-After');
+  if (retryAfter) {
+    var secs = parseInt(retryAfter, 10);
+    if (!isNaN(secs) && secs >= 0) return (secs * 1000) + Math.floor(Math.random() * 1000);
+  }
+  var base = Math.min(1000 * Math.pow(2, attempt - 1), 32000);
+  return base + Math.floor(Math.random() * 1000);
+}
+
+/** Case-insensitive lookup into UrlFetchApp response headers. */
+function headerValue_(res, name) {
+  var headers = res.getHeaders() || {};
+  var target = name.toLowerCase();
+  for (var key in headers) {
+    if (Object.prototype.hasOwnProperty.call(headers, key) && key.toLowerCase() === target) {
+      var v = headers[key];
+      return Array.isArray(v) ? v[0] : v;
+    }
+  }
+  return null;
 }
 
 /**
@@ -295,7 +473,8 @@ function initConfig() {
     DROPBOX_FOLDER: '/Gmail Archive',
     PROCESSED_LABEL: 'Archived/Dropbox',
     MAX_THREADS_PER_RUN: '40',
-    INCLUDE_ATTACHMENTS: 'true'
+    INCLUDE_ATTACHMENTS: 'true',
+    RUN_SUMMARY_EMAIL: ''   // e.g. 'you@example.com' to get a per-run digest; blank = off
   }, false); // false = merge, don't wipe other properties
   Logger.log('Config written. Remember to clear secrets out of initConfig().');
 }

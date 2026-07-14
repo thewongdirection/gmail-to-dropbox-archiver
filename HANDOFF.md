@@ -3,6 +3,11 @@
 Status snapshot for continuing this project in a fresh Claude Code session.
 Last updated: 2026-07-14.
 
+> **Latest session** added upload resilience (retry/backoff on 429 + 5xx with
+> `Retry-After` support), chunked **upload sessions** for large attachments,
+> and an optional per-run **summary email** (`RUN_SUMMARY_EMAIL`). See the
+> "What's DONE" and "How it works" notes below and in `README.md`.
+
 ## What this project is
 
 A Google Apps Script that runs daily, finds Gmail threads carrying a chosen
@@ -19,11 +24,18 @@ in [`README.md`](./README.md).
   - `messageToPdf_()`, `archiveMessage_()` — PDF rendering + attachment upload.
   - Dropbox refresh-token auth (`getDropboxAccessToken_`) and upload
     (`uploadToDropbox_`, `toDropboxApiArg_` with ASCII-safe header escaping).
+  - **Upload resilience** — `fetchWithRetry_()` / `retryDelayMs_()` /
+    `headerValue_()`: exponential backoff + jitter on `429`/`5xx`, honoring
+    `Retry-After`. All Dropbox calls route through it.
+  - **Large files** — `uploadSmallToDropbox_()` for ≤8 MB, else
+    `uploadLargeToDropbox_()` streams via `upload_session/start|append_v2|finish`.
+  - **Run summary** — `maybeSendSummary_()` emails a digest when
+    `RUN_SUMMARY_EMAIL` is set (skips quiet no-op runs).
   - Setup/test helpers: `initConfig()`, `setupDailyTrigger()`,
     `removeTriggers()`, `testDropboxConnection()`, `testArchiveOne()`.
 - **`appsscript.json`** — manifest with V8 runtime, timezone
   (`America/New_York`), and OAuth scopes (`gmail.modify`,
-  `script.external_request`, `script.scriptapp`).
+  `script.external_request`, `script.scriptapp`, `script.send_mail`).
 - **`README.md`, `LICENSE` (MIT), `.gitignore`**.
 
 ## Design decisions already locked in
@@ -54,11 +66,13 @@ in [`README.md`](./README.md).
 - Generate the exact Dropbox authorize URL / token-exchange `curl` once the
   user has their app key + secret.
 - Adjust the schedule (`setupDailyTrigger()` uses `.everyDays(1).atHour(2)`).
-- Add options if wanted: combine a thread's messages into one PDF, per-sender
-  Dropbox subfolders, a Slack/email summary after each run, or switch the
+- Remaining optional features: combine a thread's messages into one PDF,
+  per-sender Dropbox subfolders, a Slack webhook summary, or switch the
   timezone in `appsscript.json`.
-- Support very large attachments (>150 MB) via Dropbox upload sessions
-  (current code uses the single-request `files/upload`).
+- Tune `DROPBOX_CHUNK_BYTES` (default 8 MB) if you want larger/smaller upload
+  chunks.
+- ✅ Large attachments (upload sessions), retry/backoff, and email summary are
+  now implemented (this session).
 
 ## Repo layout
 
