@@ -113,6 +113,7 @@ Then set properties in the editor or by editing `initConfig()` and running it.
 | `PROCESSED_LABEL`       | ➖       | `Archived/Dropbox`         | Applied after archiving |
 | `MAX_THREADS_PER_RUN`   | ➖       | `40`                       | Per-run safety cap |
 | `INCLUDE_ATTACHMENTS`   | ➖       | `true`                     | Also upload file attachments |
+| `RUN_SUMMARY_EMAIL`     | ➖       | `you@example.com` (blank)  | Email a per-run digest; blank = off |
 
 > If you use a Dropbox **App folder** app, `DROPBOX_FOLDER` is relative to that
 > app folder (which lives at `Apps/<your-app>/` in your Dropbox).
@@ -149,9 +150,19 @@ To stop the automation, run **`removeTriggers`**.
 - **Upload** — `files/upload` on `content.dropboxapi.com`, with the request
   parameters passed in the `Dropbox-API-Arg` header (non-ASCII escaped so
   unicode filenames work). `mode=add` + `autorename=true` never overwrites.
+  Files larger than one 8 MB chunk are streamed via a Dropbox **upload session**
+  (`start` → `append_v2` → `finish`) so big attachments don't hit the
+  single-request cap.
+- **Resilience** — every Dropbox call goes through a retry wrapper that backs
+  off and retries on transient `429` (rate-limit) and `5xx` errors, honoring the
+  `Retry-After` header. Persistent failures still surface as thrown errors.
 - **Dedup** — after all of a thread's messages upload successfully, the thread
   gets the processed label. If any upload throws, the thread is left untagged
   and retried on the next run.
+- **Run summary (optional)** — set `RUN_SUMMARY_EMAIL` to receive a short digest
+  after each run (threads found/archived, files uploaded, and any per-thread
+  errors). It's skipped on quiet no-op runs to avoid inbox noise. This uses the
+  `script.send_mail` scope, so you'll be re-prompted to authorize once.
 - **Timezone** — set `"timeZone"` in [`appsscript.json`](./appsscript.json)
   (default `America/New_York`); it controls both the filename timestamps and
   the trigger's hour.
@@ -166,8 +177,10 @@ To stop the automation, run **`removeTriggers`**.
 - **Inline images** — images embedded in the email body via `cid:` references
   may not render inside the PDF. Real file attachments are uploaded separately
   and are unaffected.
-- **File size** — the single-request upload path supports files up to 150 MB,
-  which comfortably covers email PDFs and typical attachments.
+- **File size** — small files use the single-request upload path; anything
+  larger than an 8 MB chunk automatically switches to a chunked upload session,
+  so large attachments upload reliably within Apps Script's per-request payload
+  limit.
 
 ## Security
 
