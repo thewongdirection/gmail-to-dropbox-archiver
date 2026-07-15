@@ -80,6 +80,7 @@ in [`README.md`](./README.md).
 Code.gs           # archiver + setup/test/maintenance functions
 appsscript.json   # manifest: timezone, V8 runtime, OAuth scopes
 bootstrap.sh      # one-command CLI install (clasp + secret prompts)
+install-via-api.mjs # no-clasp installer via the Apps Script REST API (Node 18+)
 SETUP-CLI.md      # command-line install guide (clasp, clasp run, no-clasp options)
 README.md         # full 15-minute setup guide
 HANDOFF.md        # this file

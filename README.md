@@ -105,10 +105,16 @@ clasp create --type standalone --title "Gmail Dropbox Archiver"
 clasp push        # uploads Code.gs + appsscript.json
 ```
 
+**Option C — no clasp, via the Apps Script REST API:**
+
+```bash
+GAS_ACCESS_TOKEN=ya29.… node install-via-api.mjs     # zero-dependency, Node 18+
+```
+
 Then set properties in the editor or by editing `initConfig()` and running it.
 For the full CLI walkthrough — including automating everything with `clasp run`
-and installing **without clasp** (manual paste or the Apps Script REST API) —
-see [`SETUP-CLI.md`](./SETUP-CLI.md).
+and installing **without clasp** (`install-via-api.mjs`, raw `curl`, or manual
+paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 
 ### Script Properties
 
@@ -207,6 +213,7 @@ To stop the automation, run **`removeTriggers`**.
 | `Code.gs`           | The archiver + setup/maintenance functions |
 | `appsscript.json`   | Manifest: timezone, runtime, OAuth scopes |
 | `bootstrap.sh`      | One-command CLI install (clasp + secret prompts) |
+| `install-via-api.mjs` | No-clasp installer using the Apps Script REST API (Node 18+) |
 | `SETUP-CLI.md`      | Command-line install guide (clasp, `clasp run`, no-clasp options) |
 | `.gitignore`        | Keeps clasp creds / secrets out of git |
 

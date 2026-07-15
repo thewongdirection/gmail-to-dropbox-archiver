@@ -121,38 +121,67 @@ The baseline, no CLI at all: <https://script.google.com> → **New project**,
 paste [`Code.gs`](./Code.gs), set the manifest and Script Properties in the UI.
 Full steps in [README §3–4](./README.md#3-create-the-apps-script-project).
 
-### 2. The Apps Script REST API directly (`curl`)
-`clasp` calls [`projects.create`](https://developers.google.com/apps-script/api/reference/rest/v1/projects/create)
+### 2. The Apps Script REST API directly — `install-via-api.mjs`
+`clasp` is just a wrapper around two API calls:
+[`projects.create`](https://developers.google.com/apps-script/api/reference/rest/v1/projects/create)
 and [`projects.updateContent`](https://developers.google.com/apps-script/api/reference/rest/v1/projects/updateContent).
-You can hit them yourself with any HTTP client. Sketch:
+This repo ships a **zero-dependency Node script** (Node 18+) that makes those
+calls for you — no clasp, no `jq`, no npm install:
 
 ```bash
-# 1) Get an OAuth access token with the script.projects scope
-#    (via gcloud, an OAuth playground token, or your own flow):
-TOKEN="ya29...."
+# Prereq (once): enable the Apps Script API at
+#   https://script.google.com/home/usersettings
 
-# 2) Create an empty standalone project:
+# A) With an access token you already have (script.projects scope):
+GAS_ACCESS_TOKEN=ya29.… node install-via-api.mjs
+
+# B) With a Desktop-app OAuth client (reusable; opens a browser to authorize):
+GOOGLE_CLIENT_ID=…apps.googleusercontent.com \
+GOOGLE_CLIENT_SECRET=… \
+node install-via-api.mjs --write-clasp
+```
+
+It reads `Code.gs` + `appsscript.json`, creates a standalone project (or
+updates one via `--script-id`), and uploads both files. Handy flags:
+
+| Flag | Effect |
+|------|--------|
+| `--title <name>` | Project title (default "Gmail Dropbox Archiver") |
+| `--script-id <id>` | Update an existing project instead of creating one |
+| `--token <ya29…>` | Pass the access token inline (vs. `GAS_ACCESS_TOKEN`) |
+| `--client-id` / `--client-secret` | OAuth client (vs. the env vars) |
+| `--write-clasp` | Write `.clasp.json` so later `clasp push`/`clasp run` targets it |
+| `--no-browser` | Print the auth URL instead of auto-opening it |
+| `-h`, `--help` | Full usage |
+
+**Getting a token for option A:** the [OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
+(gear ▸ *use your own credentials*, authorize scope
+`https://www.googleapis.com/auth/script.projects`), or
+`gcloud auth print-access-token` if your ADC carries that scope.
+
+Prefer raw `curl`? The same two calls by hand — note the manifest is a file
+literally named `appsscript` of type `JSON`, and source files are `SERVER_JS`:
+
+```bash
+TOKEN="ya29...."
 SCRIPT_ID=$(curl -s -X POST \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   https://script.googleapis.com/v1/projects \
   -d '{"title":"Gmail Dropbox Archiver"}' | jq -r .scriptId)
 
-# 3) Push files. Note: source goes as "SERVER_JS"; the manifest is a file
-#    literally named "appsscript" of type "JSON".
 curl -s -X PUT \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   "https://script.googleapis.com/v1/projects/$SCRIPT_ID/content" \
   -d "$(jq -n --arg code "$(cat Code.gs)" --arg manifest "$(cat appsscript.json)" '
     {files: [
-      {name:"Code",       type:"SERVER_JS", source:$code},
-      {name:"appsscript", type:"JSON",      source:$manifest}
+      {name:"appsscript", type:"JSON",      source:$manifest},
+      {name:"Code",       type:"SERVER_JS", source:$code}
     ]}')"
 ```
 
-This is exactly what `bootstrap.sh` automates for you via clasp — reach for raw
-`curl` only if you can't install clasp (locked-down CI, etc.). Requires the
-Apps Script API enabled and a token carrying
-`https://www.googleapis.com/auth/script.projects`.
+Either way: the REST API can create and fill the project, but **not** set Script
+Properties or triggers — those are runtime state (finish them in the editor or
+via `clasp run`, as above).
 
 ### 3. `google-apps-script-github-assistant` / CI
 For teams, some wire `clasp push` into CI (GitHub Actions) using a stored
