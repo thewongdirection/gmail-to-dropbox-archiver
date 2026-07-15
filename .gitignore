@@ -6,6 +6,7 @@
 *.local
 secrets.json
 .env
+.script-properties.json
 
 # OS / editor cruft
 .DS_Store

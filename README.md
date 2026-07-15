@@ -90,7 +90,13 @@ time it runs; you don't need to make that one.
    Properties**, add the keys below. (Or use the `initConfig()` helper — see
    Option B.)
 
-**Option B — deploy with [clasp](https://github.com/google/clasp) (CLI):**
+**Option B — deploy from the command line:**
+
+```bash
+./bootstrap.sh        # installs clasp, creates the project, pushes, prompts for secrets
+```
+
+Or the manual clasp steps:
 
 ```bash
 npm install -g @google/clasp
@@ -100,6 +106,9 @@ clasp push        # uploads Code.gs + appsscript.json
 ```
 
 Then set properties in the editor or by editing `initConfig()` and running it.
+For the full CLI walkthrough — including automating everything with `clasp run`
+and installing **without clasp** (manual paste or the Apps Script REST API) —
+see [`SETUP-CLI.md`](./SETUP-CLI.md).
 
 ### Script Properties
 
@@ -197,6 +206,8 @@ To stop the automation, run **`removeTriggers`**.
 |---------------------|---------|
 | `Code.gs`           | The archiver + setup/maintenance functions |
 | `appsscript.json`   | Manifest: timezone, runtime, OAuth scopes |
+| `bootstrap.sh`      | One-command CLI install (clasp + secret prompts) |
+| `SETUP-CLI.md`      | Command-line install guide (clasp, `clasp run`, no-clasp options) |
 | `.gitignore`        | Keeps clasp creds / secrets out of git |
 
 ## License
