@@ -100,7 +100,8 @@ time it runs; you don't need to make that one.
 **Option B — deploy from the command line:**
 
 ```bash
-./bootstrap.sh        # installs clasp, creates the project, pushes, prompts for secrets
+./bootstrap.sh        # macOS/Linux: installs clasp, creates the project, pushes, prompts for secrets
+./bootstrap.ps1       # Windows PowerShell: same flow (see SETUP-CLI.md § Windows)
 ```
 
 Or the manual clasp steps:
@@ -219,7 +220,8 @@ To stop the automation, run **`removeTriggers`**.
 |---------------------|---------|
 | `Code.gs`           | The archiver + setup/maintenance functions |
 | `appsscript.json`   | Manifest: timezone, runtime, OAuth scopes |
-| `bootstrap.sh`      | One-command CLI install (clasp + secret prompts) |
+| `bootstrap.sh`      | One-command CLI install, macOS/Linux (clasp + secret prompts) |
+| `bootstrap.ps1`     | One-command CLI install, Windows PowerShell |
 | `install-via-api.mjs` | No-clasp installer using the Apps Script REST API (Node 18+) |
 | `connect-dropbox.mjs` | Automates the Dropbox OAuth handshake → refresh token (Node 18+) |
 | `gen-init-properties.mjs` | Generates a one-call `applyScriptProperties()` from your creds (Node 18+) |

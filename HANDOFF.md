@@ -79,7 +79,8 @@ in [`README.md`](./README.md).
 ```
 Code.gs           # archiver + setup/test/maintenance functions
 appsscript.json   # manifest: timezone, V8 runtime, OAuth scopes
-bootstrap.sh      # one-command CLI install (clasp + secret prompts)
+bootstrap.sh      # one-command CLI install, macOS/Linux (clasp + secret prompts)
+bootstrap.ps1     # one-command CLI install, Windows PowerShell
 install-via-api.mjs # no-clasp installer via the Apps Script REST API (Node 18+)
 connect-dropbox.mjs # automates the Dropbox OAuth handshake → refresh token (Node 18+)
 gen-init-properties.mjs # generates one-call applyScriptProperties() from creds (Node 18+)
