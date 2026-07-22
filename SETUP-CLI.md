@@ -34,6 +34,45 @@ Properties, run the setup functions). Flags: `--title "My Name"`, `--run`
 
 ---
 
+## Connecting to Dropbox (`connect-dropbox.mjs`)
+
+Getting the Dropbox credentials is its own mini-flow, and most of it is
+scriptable. `connect-dropbox.mjs` (zero-dependency, Node 18+) automates
+everything after the app exists:
+
+```bash
+node connect-dropbox.mjs
+# or non-interactively for the credential part:
+DROPBOX_APP_KEY=… DROPBOX_APP_SECRET=… node connect-dropbox.mjs \
+  --gmail-label Archive/ToDropbox --folder "/Gmail Archive"
+```
+
+It opens the authorize URL, takes the one code you paste back, exchanges it for
+a **refresh token**, verifies it by printing your Dropbox account, and writes
+`DROPBOX_APP_KEY` / `DROPBOX_APP_SECRET` / `DROPBOX_REFRESH_TOKEN` (+ label,
+folder, optional summary email) into a gitignored `.script-properties.json`.
+
+**Three things it can't do — Dropbox exposes no API for them, so do them once by
+hand first:**
+
+1. **Create the app** at <https://www.dropbox.com/developers/apps> (Scoped
+   access; "App folder" recommended).
+2. **Enable `files.content.write`** on the Permissions tab — *before* running
+   the script, or the minted token won't carry the scope.
+3. **Click "Allow"** on the consent screen. There's no password grant; consent
+   is interactive by design. The script handles the rest.
+
+Then copy the app key + secret from the app's **Settings** tab and run it.
+There is no way to headlessly log in with a Dropbox username/password — that's
+intentional. Flags: `--app-name` (path hint), `--summary-email`, `--no-browser`,
+`--print-only` (show values without writing the file), `--help`.
+
+`.script-properties.json` is the same file `bootstrap.sh` writes, so the two
+compose: run `connect-dropbox.mjs` for Dropbox, then set those properties on the
+project (editor, or paste into `initConfig()`).
+
+---
+
 ## What the CLI can and cannot do
 
 Apps Script splits your project into two kinds of state:
