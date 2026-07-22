@@ -67,6 +67,13 @@ Total time: ~15 minutes.
 > The `token_access_type=offline` parameter is what makes Dropbox return a
 > refresh token. Without it you'd only get a 4-hour access token.
 
+> **Shortcut:** once you've done sub-steps 1–3 (create app, enable
+> `files.content.write`, copy the app key + secret), you can skip the manual
+> authorize-URL and `curl` dance — run
+> [`node connect-dropbox.mjs`](./SETUP-CLI.md#connecting-to-dropbox-connect-dropboxmjs)
+> and it does the OAuth handshake, verifies the token, and saves all four
+> values for you.
+
 ---
 
 ## 2. Create the Gmail label
@@ -90,7 +97,13 @@ time it runs; you don't need to make that one.
    Properties**, add the keys below. (Or use the `initConfig()` helper — see
    Option B.)
 
-**Option B — deploy with [clasp](https://github.com/google/clasp) (CLI):**
+**Option B — deploy from the command line:**
+
+```bash
+./bootstrap.sh        # installs clasp, creates the project, pushes, prompts for secrets
+```
+
+Or the manual clasp steps:
 
 ```bash
 npm install -g @google/clasp
@@ -99,7 +112,16 @@ clasp create --type standalone --title "Gmail Dropbox Archiver"
 clasp push        # uploads Code.gs + appsscript.json
 ```
 
+**Option C — no clasp, via the Apps Script REST API:**
+
+```bash
+GAS_ACCESS_TOKEN=ya29.… node install-via-api.mjs     # zero-dependency, Node 18+
+```
+
 Then set properties in the editor or by editing `initConfig()` and running it.
+For the full CLI walkthrough — including automating everything with `clasp run`
+and installing **without clasp** (`install-via-api.mjs`, raw `curl`, or manual
+paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 
 ### Script Properties
 
@@ -197,6 +219,11 @@ To stop the automation, run **`removeTriggers`**.
 |---------------------|---------|
 | `Code.gs`           | The archiver + setup/maintenance functions |
 | `appsscript.json`   | Manifest: timezone, runtime, OAuth scopes |
+| `bootstrap.sh`      | One-command CLI install (clasp + secret prompts) |
+| `install-via-api.mjs` | No-clasp installer using the Apps Script REST API (Node 18+) |
+| `connect-dropbox.mjs` | Automates the Dropbox OAuth handshake → refresh token (Node 18+) |
+| `gen-init-properties.mjs` | Generates a one-call `applyScriptProperties()` from your creds (Node 18+) |
+| `SETUP-CLI.md`      | Command-line install guide (clasp, `clasp run`, no-clasp options) |
 | `.gitignore`        | Keeps clasp creds / secrets out of git |
 
 ## License
