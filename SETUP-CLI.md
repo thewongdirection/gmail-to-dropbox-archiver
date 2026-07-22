@@ -32,6 +32,56 @@ Then it prints the two steps Google won't let a file-push do (set Script
 Properties, run the setup functions). Flags: `--title "My Name"`, `--run`
 (attempt `clasp run`, needs the [executable-API setup](#automating-everything-clasp-run)).
 
+**On Windows, use `bootstrap.ps1` instead** — see [Windows](#windows) below.
+
+---
+
+## Windows
+
+`bootstrap.sh` is a bash script, so in `cmd`/PowerShell use the PowerShell
+port, **`bootstrap.ps1`** — it does the same four steps (verify/install clasp,
+login, create + push, prompt for secrets):
+
+```powershell
+git clone https://github.com/thewongdirection/gmail-to-dropbox-archiver.git
+cd gmail-to-dropbox-archiver
+# If scripts are blocked, allow this one process:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+./bootstrap.ps1                 # or: ./bootstrap.ps1 -Title "My Archiver"  /  -Run
+```
+
+It writes the same gitignored `.script-properties.json` (locked to your user
+via an ACL) and prints the two remaining editor steps.
+
+**The Node scripts are already cross-platform** and are the recommended Windows
+path if you'd rather not touch clasp — `connect-dropbox.mjs`,
+`install-via-api.mjs`, and `gen-init-properties.mjs` all run the same on
+Windows (the browser auto-open uses `start`, and `chmod` calls no-op). The one
+difference is **environment-variable syntax** — PowerShell, not the bash
+`NAME=value cmd` form:
+
+```powershell
+# PowerShell:
+$env:DROPBOX_APP_KEY="abc"; $env:DROPBOX_APP_SECRET="def"
+node connect-dropbox.mjs
+$env:GAS_ACCESS_TOKEN="ya29...."
+node install-via-api.mjs --with-properties
+
+# cmd.exe:
+set DROPBOX_APP_KEY=abc
+node connect-dropbox.mjs
+```
+
+Or just run the scripts with no env set and answer the prompts (the app-secret
+prompt is hidden). Prefer **Windows Terminal / PowerShell 7** — the hidden
+secret prompt in `connect-dropbox.mjs` relies on terminal raw-mode, which can
+misbehave in very old consoles; if it does, pass the secret via `$env:` instead.
+
+Bash users on Windows (Git Bash or WSL) can run `bootstrap.sh` unchanged.
+
+Everything else in this guide (`clasp run`, no-clasp REST install, one-call
+properties) works identically on Windows.
+
 ---
 
 ## Connecting to Dropbox (`connect-dropbox.mjs`)
