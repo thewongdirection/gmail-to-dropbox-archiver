@@ -69,7 +69,34 @@ intentional. Flags: `--app-name` (path hint), `--summary-email`, `--no-browser`,
 
 `.script-properties.json` is the same file `bootstrap.sh` writes, so the two
 compose: run `connect-dropbox.mjs` for Dropbox, then set those properties on the
-project (editor, or paste into `initConfig()`).
+project (editor, or the one-call helper below).
+
+---
+
+## Setting Script Properties in one call (`gen-init-properties.mjs`)
+
+Script Properties can only be written by code *inside* the project — no API sets
+them. To avoid hand-copying key/value pairs in the editor, generate a
+pre-filled function from your `.script-properties.json`:
+
+```bash
+node gen-init-properties.mjs            # → SetupProperties.gs
+```
+
+`SetupProperties.gs` contains one function, `applyScriptProperties()`, with your
+values baked in. Get it into the project, run it once, then delete it:
+
+- **REST installer (one shot):** `node install-via-api.mjs --with-properties`
+  pushes `Code.gs` *and* the generated `SetupProperties.gs` together. Open the
+  project, run `applyScriptProperties()` from the Run menu, then delete the file
+  and re-push without the flag so secrets don't linger in the source.
+- **clasp:** `node gen-init-properties.mjs && clasp push && clasp run applyScriptProperties`
+  (or run it from the editor), then delete `SetupProperties.gs` and `clasp push`.
+- **manual:** `node gen-init-properties.mjs --stdout`, paste into a new file in
+  the editor, run `applyScriptProperties()`, delete it.
+
+`SetupProperties.gs` is gitignored (it holds live secrets) — never commit it,
+and remove it from the project after that single run.
 
 ---
 

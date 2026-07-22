@@ -222,6 +222,7 @@ To stop the automation, run **`removeTriggers`**.
 | `bootstrap.sh`      | One-command CLI install (clasp + secret prompts) |
 | `install-via-api.mjs` | No-clasp installer using the Apps Script REST API (Node 18+) |
 | `connect-dropbox.mjs` | Automates the Dropbox OAuth handshake → refresh token (Node 18+) |
+| `gen-init-properties.mjs` | Generates a one-call `applyScriptProperties()` from your creds (Node 18+) |
 | `SETUP-CLI.md`      | Command-line install guide (clasp, `clasp run`, no-clasp options) |
 | `.gitignore`        | Keeps clasp creds / secrets out of git |
 

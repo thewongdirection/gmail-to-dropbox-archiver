@@ -37,11 +37,16 @@
  *     --client-secret <s>   OAuth client secret (overrides GOOGLE_CLIENT_SECRET)
  *     --no-browser          Don't try to auto-open the auth URL; just print it
  *     --write-clasp         Write .clasp.json so later `clasp push/run` works
+ *     --with-properties     Also push a SetupProperties.gs generated from
+ *                           .script-properties.json (run applyScriptProperties()
+ *                           once in the editor, then delete it)
  *     -h, --help            Show this help
  *
  * NOTE: Script Properties (your Dropbox secrets) and the daily trigger are
- * runtime state, not project files — the REST API cannot set them. After this
- * runs, set the properties and run setupDailyTrigger() once (see SETUP-CLI.md).
+ * runtime state, not project files — the REST API cannot set them directly.
+ * --with-properties gets you close: it pushes a one-call applyScriptProperties()
+ * so the last step is running a single function. The trigger still needs
+ * setupDailyTrigger() run once (see SETUP-CLI.md).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -50,6 +55,7 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { buildSetupGs } from './gen-init-properties.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const API = 'https://script.googleapis.com/v1';
@@ -69,6 +75,7 @@ function parseArgs(argv) {
       case '--client-secret': out.clientSecret = next(); break;
       case '--no-browser': out.noBrowser = true; break;
       case '--write-clasp': out.writeClasp = true; break;
+      case '--with-properties': out.withProperties = true; break;
       case '-h': case '--help': printHelp(); process.exit(0); break;
       default: die(`Unknown argument: ${a} (try --help)`);
     }
@@ -211,13 +218,25 @@ if (scriptId) {
 
 // updateContent replaces ALL files. The manifest MUST be included, named
 // "appsscript" (type JSON); source files use type SERVER_JS with no extension.
-info('Pushing Code.gs + appsscript manifest');
-await apiFetch(token, 'PUT', `/projects/${scriptId}/content`, {
-  files: [
-    { name: 'appsscript', type: 'JSON', source: manifestSource },
-    { name: 'Code', type: 'SERVER_JS', source: codeSource }
-  ]
-});
+const files = [
+  { name: 'appsscript', type: 'JSON', source: manifestSource },
+  { name: 'Code', type: 'SERVER_JS', source: codeSource }
+];
+
+let pushedProps = false;
+if (opts.withProperties) {
+  try {
+    const props = JSON.parse(readFileSync(join(HERE, '.script-properties.json'), 'utf8'));
+    files.push({ name: 'SetupProperties', type: 'SERVER_JS', source: buildSetupGs(props) });
+    pushedProps = true;
+    warn('Bundling SetupProperties.gs (contains secrets) — delete it after running it.');
+  } catch (e) {
+    die('--with-properties needs .script-properties.json (run connect-dropbox.mjs first): ' + e.message);
+  }
+}
+
+info('Pushing ' + files.map((f) => f.name).join(', '));
+await apiFetch(token, 'PUT', `/projects/${scriptId}/content`, { files });
 ok('Content uploaded');
 
 if (opts.writeClasp) {
@@ -231,16 +250,22 @@ if (opts.writeClasp) {
 }
 
 const editorUrl = `https://script.google.com/d/${scriptId}/edit`;
+const step1 = pushedProps
+  ? `1. Run applyScriptProperties() once (Run menu) to set your Script
+     Properties, then DELETE SetupProperties.gs and re-push (drop
+     --with-properties) so the secrets don't linger in the source.`
+  : `1. Script Properties — open the project ▸ Project Settings ▸ Script
+     Properties, and add DROPBOX_APP_KEY / DROPBOX_APP_SECRET /
+     DROPBOX_REFRESH_TOKEN / GMAIL_LABEL (+ optional DROPBOX_FOLDER,
+     RUN_SUMMARY_EMAIL). See README §3. (Tip: --with-properties makes this
+     a one-function call.)`;
 console.log(`
 ──────────────────────────────────────────────────────────────────────────
 Code is live at:
   ${editorUrl}
 
-Two runtime steps the REST API can't do (set them once):
-  1. Script Properties — open the project ▸ Project Settings ▸ Script
-     Properties, and add DROPBOX_APP_KEY / DROPBOX_APP_SECRET /
-     DROPBOX_REFRESH_TOKEN / GMAIL_LABEL (+ optional DROPBOX_FOLDER,
-     RUN_SUMMARY_EMAIL). See README §3.
+Runtime steps the REST API can't do (set them once):
+  ${step1}
   2. Run testDropboxConnection, testArchiveOne, then setupDailyTrigger from
      the editor's Run menu (approve the OAuth prompt on first run).
 
