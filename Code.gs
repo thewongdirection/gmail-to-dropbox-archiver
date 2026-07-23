@@ -205,6 +205,7 @@ function buildTargets_(cfg) {
     targets.push({
       name: 'Dropbox',
       upload: function (relPath, blob) {
+        // Dropbox's files/upload creates any missing parent folders itself.
         uploadToDropbox_(dropboxToken, cfg.dropboxFolder + '/' + relPath, blob);
       }
     });
@@ -212,10 +213,14 @@ function buildTargets_(cfg) {
 
   if (cfg.useOneDrive) {
     var graphToken = getGraphAccessToken_(cfg);
+    var ensuredFolders = {};  // per-run cache so each folder is created at most once
     targets.push({
       name: 'OneDrive',
       upload: function (relPath, blob) {
-        uploadToOneDrive_(cfg, graphToken, cfg.onedriveFolder + '/' + relPath, blob);
+        var fullPath = cfg.onedriveFolder + '/' + relPath;
+        // Graph uploads by path 404 if the parent folder is missing, so make it first.
+        ensureOneDriveFolder_(cfg, graphToken, parentDir_(fullPath), ensuredFolders);
+        uploadToOneDrive_(cfg, graphToken, fullPath, blob);
       }
     });
   }
@@ -682,6 +687,54 @@ function graphItemUrl_(cfg, path) {
 function encodeGraphPath_(path) {
   var clean = ('/' + path).replace(/\/{2,}/g, '/');
   return clean.split('/').map(function (seg) { return encodeURIComponent(seg); }).join('/');
+}
+
+/**
+ * Ensure every folder in `folderPath` exists in the drive, creating missing
+ * levels top-down. `ensured` is a per-run cache so a given folder is only
+ * created once even though every file triggers a check. Idempotent: an
+ * already-existing folder (HTTP 409) is treated as success.
+ */
+function ensureOneDriveFolder_(cfg, accessToken, folderPath, ensured) {
+  var parts = folderPath.split('/').filter(function (s) { return s; });
+  var parentPath = '';
+  for (var i = 0; i < parts.length; i++) {
+    var full = parentPath ? parentPath + '/' + parts[i] : parts[i];
+    if (!ensured[full]) {
+      createOneDriveChildFolder_(cfg, accessToken, parentPath, parts[i]);
+      ensured[full] = true;
+    }
+    parentPath = full;
+  }
+}
+
+/** Create a single child folder under `parentPath` ("" = drive root). */
+function createOneDriveChildFolder_(cfg, accessToken, parentPath, name) {
+  var base = 'https://graph.microsoft.com/v1.0' + cfg.onedriveDrivePrefix;
+  var url = parentPath
+    ? base + '/root:' + encodeGraphPath_(parentPath) + ':/children'
+    : base + '/root/children';
+  var res = fetchWithRetry_(url, {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + accessToken },
+    payload: JSON.stringify({
+      name: name,
+      folder: {},
+      '@microsoft.graph.conflictBehavior': 'fail'  // 409 if it already exists → fine
+    })
+  });
+  var code = res.getResponseCode();
+  if (code === 200 || code === 201 || code === 409) return;  // created, or already there
+  throw new Error('OneDrive create folder failed (' + code + ') for "' +
+    (parentPath ? parentPath + '/' : '') + name + '": ' + res.getContentText());
+}
+
+/** Directory portion of a path (everything before the last "/"). */
+function parentDir_(path) {
+  var idx = path.lastIndexOf('/');
+  return idx <= 0 ? '' : path.slice(0, idx);
 }
 
 /* ===========================================================================

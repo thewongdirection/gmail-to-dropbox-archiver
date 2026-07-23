@@ -219,6 +219,10 @@ To stop the automation, run **`removeTriggers`**.
   enabled provider's access token is resolved once at the start of a run (so a
   bad credential fails fast), and every file is uploaded to every target under
   `<folder>/<yyyy-MM>/…`.
+- **Folders auto-created** — the destination folder (and its `yyyy-MM` /
+  `attachments` subfolders) is created on demand if it doesn't exist. Dropbox
+  does this itself on upload; for OneDrive the script creates each missing level
+  via Graph first (cached per run), since Graph uploads 404 on a missing parent.
 - **Dropbox upload** — `files/upload` on `content.dropboxapi.com`, with request
   parameters in the `Dropbox-API-Arg` header (non-ASCII escaped so unicode
   filenames work). `mode=add` + `autorename=true` never overwrites. Files larger
