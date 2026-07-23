@@ -7,7 +7,7 @@
  *   Given your Dropbox app key + secret, it runs the OAuth "offline" flow,
  *   turns the one-time authorization code into a long-lived **refresh token**,
  *   verifies it against your account, and writes DROPBOX_APP_KEY /
- *   DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN (+ GMAIL_LABEL / DROPBOX_FOLDER /
+ *   DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN (+ GMAIL_LABEL / ARCHIVE_FOLDER /
  *   RUN_SUMMARY_EMAIL) into a gitignored .script-properties.json.
  *
  * WHAT IT CANNOT DO (Dropbox has no API for these — do them once by hand):
@@ -31,7 +31,7 @@
  *   --app-name <name>     App name — only used for messages + the App-folder
  *                         path hint (not required by the flow)
  *   --gmail-label <label> GMAIL_LABEL to write   (default "Archive/ToDropbox")
- *   --folder <path>       DROPBOX_FOLDER to write (default "/Gmail Archive")
+ *   --folder <path>       ARCHIVE_FOLDER to write — applies to every provider (default "/Gmail Archive")
  *   --summary-email <a>   RUN_SUMMARY_EMAIL to write (default blank = off)
  *   --no-browser          Print the auth URL instead of auto-opening it
  *   --print-only          Print the values; do NOT write .script-properties.json
@@ -214,13 +214,13 @@ info('Verifying against your Dropbox account');
 const acct = await verifyAccount(tok.access_token);
 if (acct) ok(`Connected as ${acct.name?.display_name || '(unknown)'} <${acct.email}>`);
 
-// 5) Emit the four values.
+// 5) Emit the values. ARCHIVE_FOLDER applies to every provider (Dropbox + M365).
 const values = {
   DROPBOX_APP_KEY: appKey,
   DROPBOX_APP_SECRET: appSecret,
   DROPBOX_REFRESH_TOKEN: tok.refresh_token,
   GMAIL_LABEL: opts.gmailLabel,
-  DROPBOX_FOLDER: opts.folder,
+  ARCHIVE_FOLDER: opts.folder,
   RUN_SUMMARY_EMAIL: opts.summaryEmail
 };
 
@@ -237,8 +237,8 @@ if (opts.printOnly) {
 }
 
 const folderHint = opts.appName
-  ? `Apps/${opts.appName}${values.DROPBOX_FOLDER}/ (App-folder apps are sandboxed there)`
-  : `${values.DROPBOX_FOLDER}/ (relative to the app folder if you chose "App folder")`;
+  ? `Apps/${opts.appName}${values.ARCHIVE_FOLDER}/ (App-folder apps are sandboxed there)`
+  : `${values.ARCHIVE_FOLDER}/ (relative to the app folder if you chose "App folder")`;
 
 console.log(`
 ──────────────────────────────────────────────────────────────────────────

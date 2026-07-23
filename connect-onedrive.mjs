@@ -8,7 +8,7 @@
  *   Given your Azure AD app (client) id, it runs the OAuth authorization-code
  *   flow with PKCE over a localhost loopback, turns the result into a long-lived
  *   **refresh token**, verifies it against your drive, and writes
- *   ONEDRIVE_CLIENT_ID / ONEDRIVE_REFRESH_TOKEN / ONEDRIVE_TENANT (+ folder,
+ *   ONEDRIVE_CLIENT_ID / ONEDRIVE_REFRESH_TOKEN / ONEDRIVE_TENANT (+ ARCHIVE_FOLDER,
  *   optional client secret) plus STORAGE_PROVIDER into .script-properties.json.
  *
  * WHAT IT CANNOT DO (no API for these — do them once in the Azure portal):
@@ -36,7 +36,7 @@
  *                         prompted hidden if the flag is given without a value)
  *   --tenant <t>          common | organizations | consumers | tenant id (default common)
  *   --scope <s>           OAuth scope (default "offline_access Files.ReadWrite.All")
- *   --folder <path>       ONEDRIVE_FOLDER to write (default "/Gmail Archive")
+ *   --folder <path>       ARCHIVE_FOLDER to write — applies to every provider (default "/Gmail Archive")
  *   --provider <p>        STORAGE_PROVIDER to write: onedrive | both
  *                         (default: "both" if Dropbox creds already present, else "onedrive")
  *   --no-browser          Print the auth URL instead of auto-opening it
@@ -221,7 +221,7 @@ const values = {
   ONEDRIVE_CLIENT_ID: opts.clientId,
   ONEDRIVE_REFRESH_TOKEN: tok.refresh_token,
   ONEDRIVE_TENANT: opts.tenant,
-  ONEDRIVE_FOLDER: opts.folder
+  ARCHIVE_FOLDER: opts.folder  // one destination folder for every provider
 };
 if (opts.clientSecret) values.ONEDRIVE_CLIENT_SECRET = opts.clientSecret;
 
@@ -239,7 +239,7 @@ if (opts.printOnly) {
 console.log(`
 ──────────────────────────────────────────────────────────────────────────
 OneDrive is connected (STORAGE_PROVIDER=${provider}). Files will land in the
-user's OneDrive under ${values.ONEDRIVE_FOLDER}/ (set ONEDRIVE_DRIVE_ID to
+user's OneDrive under ${values.ARCHIVE_FOLDER}/ (set ONEDRIVE_DRIVE_ID to
 target a SharePoint document library instead).
 
 Remaining step — get these values into the Apps Script project's Script

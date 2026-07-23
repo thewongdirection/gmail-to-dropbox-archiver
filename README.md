@@ -137,9 +137,12 @@ paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 
 | Key                     | Required | Example / default          | Purpose |
 |-------------------------|----------|----------------------------|---------|
-| `GMAIL_LABEL`           | ✅       | `Archive/ToDropbox`        | Label to archive |
+| `GMAIL_LABEL`           | ✅       | `Archive/ToDropbox`        | Label whose threads are candidates to archive |
 | `STORAGE_PROVIDER`      | ➖       | `dropbox` (default)        | `dropbox` \| `onedrive` \| `both` |
-| `PROCESSED_LABEL`       | ➖       | `Archived/Dropbox`         | Applied after archiving |
+| `ARCHIVE_FOLDER`        | ➖       | `/Gmail Archive` (default) | Destination folder for **every** provider |
+| `SUBJECT_REGEX`         | ➖       | `^(Invoice\|Receipt)\b` (blank) | Only archive messages whose **subject** matches; blank = all |
+| `SUBJECT_REGEX_FLAGS`   | ➖       | `i` (default)              | Regex flags; `""` = case-sensitive (`g`/`y` ignored) |
+| `PROCESSED_LABEL`       | ➖       | `Archived/Dropbox`         | Applied after a thread is handled |
 | `MAX_THREADS_PER_RUN`   | ➖       | `40`                       | Per-run safety cap |
 | `INCLUDE_ATTACHMENTS`   | ➖       | `true`                     | Also upload file attachments |
 | `RUN_SUMMARY_EMAIL`     | ➖       | `you@example.com` (blank)  | Email a per-run digest; blank = off |
@@ -151,7 +154,7 @@ paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 | `DROPBOX_APP_KEY`       | ✅       | `abc123…`                  | Dropbox app key |
 | `DROPBOX_APP_SECRET`    | ✅       | `def456…`                  | Dropbox app secret |
 | `DROPBOX_REFRESH_TOKEN` | ✅       | `sl.B7…`                   | From step 1.4 |
-| `DROPBOX_FOLDER`        | ➖       | `/Gmail Archive` (default) | Destination folder in Dropbox |
+| `DROPBOX_FOLDER`        | ➖       | (falls back to `ARCHIVE_FOLDER`) | Per-provider folder override |
 
 **Microsoft 365 / OneDrive** (required when `STORAGE_PROVIDER` is `onedrive` or `both`)
 
@@ -162,12 +165,22 @@ paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 | `ONEDRIVE_CLIENT_SECRET` | ➖       | `xyz…`                     | Only for confidential (web) apps |
 | `ONEDRIVE_TENANT`        | ➖       | `common` (default)         | `common` \| `organizations` \| `consumers` \| tenant id |
 | `ONEDRIVE_SCOPE`         | ➖       | `offline_access Files.ReadWrite.All` | OAuth scope |
-| `ONEDRIVE_FOLDER`        | ➖       | `/Gmail Archive` (default) | Destination folder in OneDrive |
+| `ONEDRIVE_FOLDER`        | ➖       | (falls back to `ARCHIVE_FOLDER`) | Per-provider folder override |
 | `ONEDRIVE_DRIVE_ID`      | ➖       | (blank = your OneDrive)    | Target a SharePoint document library |
 
-> If you use a Dropbox **App folder** app, `DROPBOX_FOLDER` is relative to that
-> app folder (which lives at `Apps/<your-app>/` in your Dropbox). The easiest
-> way to fill in the provider blocks is `connect-dropbox.mjs` /
+> **Choosing what gets archived.** `GMAIL_LABEL` selects candidate *threads*;
+> `SUBJECT_REGEX` (optional) then narrows to individual *messages* whose subject
+> matches. Threads are still tagged `PROCESSED_LABEL` once handled — even when no
+> message matched — so non-matching threads aren't re-scanned every run.
+>
+> **Destination folder.** Set `ARCHIVE_FOLDER` once and it applies to Dropbox
+> and OneDrive alike; `DROPBOX_FOLDER` / `ONEDRIVE_FOLDER` override it per
+> provider. **Upgrading?** If you set `DROPBOX_FOLDER` (or `ONEDRIVE_FOLDER`) on
+> an earlier version, that value still wins over `ARCHIVE_FOLDER` — clear it if
+> you now want the single-folder setting to take effect.
+>
+> For a Dropbox **App folder** app, folders are relative to `Apps/<your-app>/`.
+> The easiest way to fill in the provider blocks is `connect-dropbox.mjs` /
 > `connect-onedrive.mjs` (see [`SETUP-CLI.md`](./SETUP-CLI.md)).
 
 ---
@@ -196,7 +209,9 @@ To stop the automation, run **`removeTriggers`**.
 
 - **Selection** — `GmailApp.search('label:X -label:Processed')` returns only
   threads that still need archiving. Processed threads are excluded by the
-  label, so runs are idempotent and cheap.
+  label, so runs are idempotent and cheap. If `SUBJECT_REGEX` is set, each
+  message's subject is then tested against it (Gmail search has no regex, so
+  this filter runs in code) and only matching messages are archived.
 - **PDF** — each message's HTML body is wrapped with a small header table
   (Subject / From / To / Cc / Date) and converted via
   `Utilities.newBlob(html).getAs('application/pdf')`.

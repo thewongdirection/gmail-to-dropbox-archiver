@@ -18,6 +18,12 @@
  *
  *   GMAIL_LABEL            Gmail label to archive, e.g. "Archive/ToDropbox" (required)
  *   STORAGE_PROVIDER       "dropbox" | "onedrive" | "both"    (default "dropbox")
+ *   ARCHIVE_FOLDER         Destination folder for BOTH providers (default "/Gmail Archive").
+ *                          Per-provider DROPBOX_FOLDER / ONEDRIVE_FOLDER override it.
+ *   SUBJECT_REGEX          Only archive messages whose subject matches this regex;
+ *                          blank = archive every message in a labeled thread (default "")
+ *   SUBJECT_REGEX_FLAGS    Regex flags for SUBJECT_REGEX (default "i" case-insensitive;
+ *                          set to "" for case-sensitive; g/y ignored)
  *   PROCESSED_LABEL        Label applied after archiving      (default "Archived/Dropbox")
  *   MAX_THREADS_PER_RUN    Safety cap per execution           (default "40")
  *   INCLUDE_ATTACHMENTS    "true"/"false"                     (default "true")
@@ -27,7 +33,7 @@
  *   DROPBOX_APP_KEY        Dropbox app key
  *   DROPBOX_APP_SECRET     Dropbox app secret
  *   DROPBOX_REFRESH_TOKEN  Dropbox refresh token
- *   DROPBOX_FOLDER         Destination folder (default "/Gmail Archive")
+ *   DROPBOX_FOLDER         Destination folder override (default: ARCHIVE_FOLDER)
  *
  *   -- OneDrive / M365 (required when STORAGE_PROVIDER is "onedrive" or "both") --
  *   ONEDRIVE_CLIENT_ID     Azure AD app (client) id
@@ -35,7 +41,7 @@
  *   ONEDRIVE_CLIENT_SECRET App secret — only for confidential (web) app registrations (optional)
  *   ONEDRIVE_TENANT        "common" | "organizations" | "consumers" | tenant id (default "common")
  *   ONEDRIVE_SCOPE         OAuth scope (default "offline_access Files.ReadWrite.All")
- *   ONEDRIVE_FOLDER        Destination folder (default "/Gmail Archive")
+ *   ONEDRIVE_FOLDER        Destination folder override (default: ARCHIVE_FOLDER)
  *   ONEDRIVE_DRIVE_ID      Target a specific drive (SharePoint library); blank = the user's OneDrive
  */
 function getConfig_() {
@@ -56,6 +62,10 @@ function getConfig_() {
       'Project Settings ▸ Script Properties.');
   }
 
+  // One folder for every destination, with optional per-provider overrides.
+  var archiveFolder = p.ARCHIVE_FOLDER || '/Gmail Archive';
+  var trimFolder = function (f) { return f.replace(/\/+$/, ''); };
+
   return {
     provider: provider,
     useDropbox: useDropbox,
@@ -65,7 +75,7 @@ function getConfig_() {
     appKey: p.DROPBOX_APP_KEY,
     appSecret: p.DROPBOX_APP_SECRET,
     refreshToken: p.DROPBOX_REFRESH_TOKEN,
-    dropboxFolder: (p.DROPBOX_FOLDER || '/Gmail Archive').replace(/\/+$/, ''),
+    dropboxFolder: trimFolder(p.DROPBOX_FOLDER || archiveFolder),
 
     // OneDrive / Microsoft 365
     onedriveClientId: p.ONEDRIVE_CLIENT_ID,
@@ -73,16 +83,42 @@ function getConfig_() {
     onedriveRefreshToken: p.ONEDRIVE_REFRESH_TOKEN,
     onedriveTenant: p.ONEDRIVE_TENANT || 'common',
     onedriveScope: p.ONEDRIVE_SCOPE || 'offline_access Files.ReadWrite.All',
-    onedriveFolder: (p.ONEDRIVE_FOLDER || '/Gmail Archive').replace(/\/+$/, ''),
+    onedriveFolder: trimFolder(p.ONEDRIVE_FOLDER || archiveFolder),
     onedriveDrivePrefix: p.ONEDRIVE_DRIVE_ID ? '/drives/' + p.ONEDRIVE_DRIVE_ID : '/me/drive',
 
     // Common
     gmailLabel: p.GMAIL_LABEL,
+    subjectRe: compileSubjectRegex_(p.SUBJECT_REGEX, p.SUBJECT_REGEX_FLAGS),
     processedLabel: p.PROCESSED_LABEL || 'Archived/Dropbox',
     maxThreads: parseInt(p.MAX_THREADS_PER_RUN || '40', 10),
     includeAttachments: (p.INCLUDE_ATTACHMENTS || 'true').toLowerCase() !== 'false',
     summaryEmail: (p.RUN_SUMMARY_EMAIL || '').trim()
   };
+}
+
+/**
+ * Compile the optional subject filter into a RegExp (or null = match all).
+ * Flags default to case-insensitive when SUBJECT_REGEX_FLAGS is unset, but an
+ * explicit empty string means "no flags" (case-sensitive) — V8 has no inline
+ * (?i) syntax, so flags are the only way to control this. The 'g' and 'y' flags
+ * are stripped because they make RegExp.test() stateful across calls, which
+ * would intermittently skip matching subjects.
+ */
+function compileSubjectRegex_(pattern, flags) {
+  if (!pattern) return null;
+  var raw = (flags == null) ? 'i' : flags;   // unset → 'i'; '' → no flags
+  var safeFlags = raw.replace(/[^imsu]/g, '');
+  try {
+    return new RegExp(pattern, safeFlags);
+  } catch (e) {
+    throw new Error('Invalid SUBJECT_REGEX /' + pattern + '/' + safeFlags + ': ' + e.message);
+  }
+}
+
+/** True when no subject filter is set, or the message subject matches it. */
+function subjectMatches_(cfg, message) {
+  if (!cfg.subjectRe) return true;
+  return cfg.subjectRe.test(message.getSubject() || '');
 }
 
 /** Normalize STORAGE_PROVIDER into one of: "dropbox", "onedrive", "both". */
@@ -115,18 +151,25 @@ function archiveLabeledEmails() {
 
   var archivedThreads = 0;
   var archivedFiles = 0;
+  var skippedMessages = 0;
   var errors = [];
 
   for (var t = 0; t < threads.length; t++) {
     var thread = threads[t];
     try {
       var messages = thread.getMessages();
+      var matchedInThread = 0;
       for (var m = 0; m < messages.length; m++) {
+        // Only archive messages whose subject matches SUBJECT_REGEX (if set).
+        if (!subjectMatches_(cfg, messages[m])) { skippedMessages++; continue; }
         archivedFiles += archiveMessage_(messages[m], cfg, targets);
+        matchedInThread++;
       }
-      // Tag the thread only after every message uploaded to every target.
+      // Tag the thread once handled — including when nothing matched — so a run
+      // isn't re-scanning the same non-matching threads forever (they'd otherwise
+      // keep filling MAX_THREADS_PER_RUN and starve everything else).
       thread.addLabel(processedLabel);
-      archivedThreads++;
+      if (matchedInThread > 0) archivedThreads++;
     } catch (err) {
       // Leave the thread untagged so the next run retries it.
       Logger.log('ERROR archiving thread "%s": %s', safeSubject_(thread), err);
@@ -134,13 +177,14 @@ function archiveLabeledEmails() {
     }
   }
 
-  Logger.log('Done. Archived %s file(s) across %s thread(s). %s error(s).',
-    archivedFiles, archivedThreads, errors.length);
+  Logger.log('Done. Archived %s file(s) across %s thread(s); %s message(s) skipped by filter. %s error(s).',
+    archivedFiles, archivedThreads, skippedMessages, errors.length);
 
   var summary = {
     found: threads.length,
     threads: archivedThreads,
     files: archivedFiles,
+    skipped: skippedMessages,
     errors: errors
   };
   maybeSendSummary_(cfg, summary);
@@ -212,6 +256,7 @@ function maybeSendSummary_(cfg, summary) {
       'Threads found:    ' + summary.found,
       'Threads archived: ' + summary.threads,
       'Files uploaded:   ' + summary.files + ' (to ' + dest + ')',
+      'Skipped (filter): ' + (summary.skipped || 0),
       'Errors:           ' + summary.errors.length
     ];
     if (summary.errors.length) {
@@ -695,6 +740,9 @@ function initConfig() {
   PropertiesService.getScriptProperties().setProperties({
     GMAIL_LABEL: 'Archive/ToDropbox',
     STORAGE_PROVIDER: 'dropbox',   // 'dropbox' | 'onedrive' | 'both'
+    ARCHIVE_FOLDER: '/Gmail Archive',  // one destination folder for every provider
+    SUBJECT_REGEX: '',             // e.g. '^(Invoice|Receipt)\\b' — blank archives everything
+    SUBJECT_REGEX_FLAGS: 'i',      // regex flags (g/y ignored)
     PROCESSED_LABEL: 'Archived/Dropbox',
     MAX_THREADS_PER_RUN: '40',
     INCLUDE_ATTACHMENTS: 'true',
@@ -704,14 +752,14 @@ function initConfig() {
     DROPBOX_APP_KEY: '',
     DROPBOX_APP_SECRET: '',
     DROPBOX_REFRESH_TOKEN: '',
-    DROPBOX_FOLDER: '/Gmail Archive',
+    // DROPBOX_FOLDER: '',         // optional per-provider override of ARCHIVE_FOLDER
 
     // OneDrive / M365 (needed when STORAGE_PROVIDER is 'onedrive' or 'both')
     ONEDRIVE_CLIENT_ID: '',
     ONEDRIVE_CLIENT_SECRET: '',     // only for confidential (web) app registrations
     ONEDRIVE_REFRESH_TOKEN: '',
-    ONEDRIVE_TENANT: 'common',
-    ONEDRIVE_FOLDER: '/Gmail Archive'
+    ONEDRIVE_TENANT: 'common'
+    // ONEDRIVE_FOLDER: '',        // optional per-provider override of ARCHIVE_FOLDER
   }, false); // false = merge, don't wipe other properties
   Logger.log('Config written. Remember to clear secrets out of initConfig().');
 }
@@ -773,14 +821,24 @@ function testConnections() {
   testOneDriveConnection();
 }
 
-/** Dry run: archive at most one message so you can eyeball the result. */
+/** Dry run: archive the first subject-matching message so you can eyeball the
+ *  result. Scans a handful of threads to find one that passes SUBJECT_REGEX. */
 function testArchiveOne() {
   var cfg = getConfig_();
   var targets = buildTargets_(cfg);
   var threads = GmailApp.search('label:' + toSearchLabel_(cfg.gmailLabel) +
-    ' -label:' + toSearchLabel_(cfg.processedLabel), 0, 1);
+    ' -label:' + toSearchLabel_(cfg.processedLabel), 0, 10);
   if (!threads.length) { Logger.log('No unarchived threads found for that label.'); return; }
-  var count = archiveMessage_(threads[0].getMessages()[0], cfg, targets);
-  Logger.log('Archived %s file(s) from one message to %s (thread NOT marked processed).',
-    count, providerLabel_(cfg));
+
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    for (var m = 0; m < messages.length; m++) {
+      if (!subjectMatches_(cfg, messages[m])) continue;
+      var count = archiveMessage_(messages[m], cfg, targets);
+      Logger.log('Archived %s file(s) from message "%s" to %s (thread NOT marked processed).',
+        count, messages[m].getSubject(), providerLabel_(cfg));
+      return;
+    }
+  }
+  Logger.log('No message in the first %s thread(s) matched SUBJECT_REGEX.', threads.length);
 }
