@@ -1,9 +1,10 @@
 /**
- * Gmail → Dropbox PDF Archiver
+ * Gmail → Cloud PDF Archiver (Dropbox and/or Microsoft 365 / OneDrive)
  * ---------------------------------------------------------------------------
  * Archives Gmail messages that carry a specific label by:
  *   1. Rendering each message (headers + body) to a PDF.
- *   2. Uploading that PDF — and any real file attachments — to Dropbox.
+ *   2. Uploading that PDF — and any real file attachments — to one or more
+ *      cloud targets: Dropbox, OneDrive/SharePoint (M365), or both.
  *   3. Tagging the thread with a "processed" label so it is never archived twice.
  *
  * Runs on a daily time-based trigger. All secrets live in Script Properties,
@@ -15,33 +16,68 @@
  * Configuration is read from Script Properties (Project Settings ▸ Script
  * Properties, or set programmatically with initConfig()).
  *
- *   DROPBOX_APP_KEY        Dropbox app key       (required)
- *   DROPBOX_APP_SECRET     Dropbox app secret    (required)
- *   DROPBOX_REFRESH_TOKEN  Dropbox refresh token (required)
  *   GMAIL_LABEL            Gmail label to archive, e.g. "Archive/ToDropbox" (required)
- *   DROPBOX_FOLDER         Dropbox destination folder, e.g. "/Gmail Archive" (default "/Gmail Archive")
+ *   STORAGE_PROVIDER       "dropbox" | "onedrive" | "both"    (default "dropbox")
  *   PROCESSED_LABEL        Label applied after archiving      (default "Archived/Dropbox")
  *   MAX_THREADS_PER_RUN    Safety cap per execution           (default "40")
  *   INCLUDE_ATTACHMENTS    "true"/"false"                     (default "true")
  *   RUN_SUMMARY_EMAIL      Address to email a per-run digest; blank = off (default "")
+ *
+ *   -- Dropbox (required when STORAGE_PROVIDER is "dropbox" or "both") --
+ *   DROPBOX_APP_KEY        Dropbox app key
+ *   DROPBOX_APP_SECRET     Dropbox app secret
+ *   DROPBOX_REFRESH_TOKEN  Dropbox refresh token
+ *   DROPBOX_FOLDER         Destination folder (default "/Gmail Archive")
+ *
+ *   -- OneDrive / M365 (required when STORAGE_PROVIDER is "onedrive" or "both") --
+ *   ONEDRIVE_CLIENT_ID     Azure AD app (client) id
+ *   ONEDRIVE_REFRESH_TOKEN Microsoft Graph refresh token (rotated + re-saved automatically)
+ *   ONEDRIVE_CLIENT_SECRET App secret — only for confidential (web) app registrations (optional)
+ *   ONEDRIVE_TENANT        "common" | "organizations" | "consumers" | tenant id (default "common")
+ *   ONEDRIVE_SCOPE         OAuth scope (default "offline_access Files.ReadWrite.All")
+ *   ONEDRIVE_FOLDER        Destination folder (default "/Gmail Archive")
+ *   ONEDRIVE_DRIVE_ID      Target a specific drive (SharePoint library); blank = the user's OneDrive
  */
 function getConfig_() {
   var props = PropertiesService.getScriptProperties();
   var p = props.getProperties();
 
-  var required = ['DROPBOX_APP_KEY', 'DROPBOX_APP_SECRET', 'DROPBOX_REFRESH_TOKEN', 'GMAIL_LABEL'];
+  var provider = normalizeProvider_(p.STORAGE_PROVIDER);
+  var useDropbox = provider === 'dropbox' || provider === 'both';
+  var useOneDrive = provider === 'onedrive' || provider === 'both';
+
+  var required = ['GMAIL_LABEL'];
+  if (useDropbox) required.push('DROPBOX_APP_KEY', 'DROPBOX_APP_SECRET', 'DROPBOX_REFRESH_TOKEN');
+  if (useOneDrive) required.push('ONEDRIVE_CLIENT_ID', 'ONEDRIVE_REFRESH_TOKEN');
   var missing = required.filter(function (k) { return !p[k]; });
   if (missing.length) {
     throw new Error('Missing Script Properties: ' + missing.join(', ') +
-      '. Run initConfig() or set them under Project Settings ▸ Script Properties.');
+      ' (STORAGE_PROVIDER=' + provider + '). Run initConfig() or set them under ' +
+      'Project Settings ▸ Script Properties.');
   }
 
   return {
+    provider: provider,
+    useDropbox: useDropbox,
+    useOneDrive: useOneDrive,
+
+    // Dropbox
     appKey: p.DROPBOX_APP_KEY,
     appSecret: p.DROPBOX_APP_SECRET,
     refreshToken: p.DROPBOX_REFRESH_TOKEN,
-    gmailLabel: p.GMAIL_LABEL,
     dropboxFolder: (p.DROPBOX_FOLDER || '/Gmail Archive').replace(/\/+$/, ''),
+
+    // OneDrive / Microsoft 365
+    onedriveClientId: p.ONEDRIVE_CLIENT_ID,
+    onedriveClientSecret: p.ONEDRIVE_CLIENT_SECRET || '',
+    onedriveRefreshToken: p.ONEDRIVE_REFRESH_TOKEN,
+    onedriveTenant: p.ONEDRIVE_TENANT || 'common',
+    onedriveScope: p.ONEDRIVE_SCOPE || 'offline_access Files.ReadWrite.All',
+    onedriveFolder: (p.ONEDRIVE_FOLDER || '/Gmail Archive').replace(/\/+$/, ''),
+    onedriveDrivePrefix: p.ONEDRIVE_DRIVE_ID ? '/drives/' + p.ONEDRIVE_DRIVE_ID : '/me/drive',
+
+    // Common
+    gmailLabel: p.GMAIL_LABEL,
     processedLabel: p.PROCESSED_LABEL || 'Archived/Dropbox',
     maxThreads: parseInt(p.MAX_THREADS_PER_RUN || '40', 10),
     includeAttachments: (p.INCLUDE_ATTACHMENTS || 'true').toLowerCase() !== 'false',
@@ -49,12 +85,24 @@ function getConfig_() {
   };
 }
 
+/** Normalize STORAGE_PROVIDER into one of: "dropbox", "onedrive", "both". */
+function normalizeProvider_(v) {
+  var s = (v || 'dropbox').toString().trim().toLowerCase();
+  if (s === 'both' || s === 'all') return 'both';
+  if (s === 'onedrive' || s === 'm365' || s === 'sharepoint' || s === 'msgraph' || s === 'graph') {
+    return 'onedrive';
+  }
+  return 'dropbox';
+}
+
 /* ===========================================================================
  * MAIN ENTRY POINT — this is the function the daily trigger calls.
  * ======================================================================== */
 function archiveLabeledEmails() {
   var cfg = getConfig_();
-  var accessToken = getDropboxAccessToken_(cfg);
+  // Resolve each enabled storage target up front so a bad credential fails fast.
+  var targets = buildTargets_(cfg);
+  Logger.log('Archiving to: %s', targets.map(function (x) { return x.name; }).join(', '));
 
   var processedLabel = getOrCreateLabel_(cfg.processedLabel);
 
@@ -74,9 +122,9 @@ function archiveLabeledEmails() {
     try {
       var messages = thread.getMessages();
       for (var m = 0; m < messages.length; m++) {
-        archivedFiles += archiveMessage_(messages[m], cfg, accessToken);
+        archivedFiles += archiveMessage_(messages[m], cfg, targets);
       }
-      // Tag the thread only after every message uploaded successfully.
+      // Tag the thread only after every message uploaded to every target.
       thread.addLabel(processedLabel);
       archivedThreads++;
     } catch (err) {
@@ -100,6 +148,54 @@ function archiveLabeledEmails() {
 }
 
 /**
+ * Build the list of storage targets to upload each file to. Each target owns
+ * its own resolved access token and destination folder, and exposes a single
+ * upload(relativePath, blob) method. Resolving tokens here makes a bad
+ * credential fail the whole run immediately rather than mid-archive.
+ */
+function buildTargets_(cfg) {
+  var targets = [];
+
+  if (cfg.useDropbox) {
+    var dropboxToken = getDropboxAccessToken_(cfg);
+    targets.push({
+      name: 'Dropbox',
+      upload: function (relPath, blob) {
+        uploadToDropbox_(dropboxToken, cfg.dropboxFolder + '/' + relPath, blob);
+      }
+    });
+  }
+
+  if (cfg.useOneDrive) {
+    var graphToken = getGraphAccessToken_(cfg);
+    targets.push({
+      name: 'OneDrive',
+      upload: function (relPath, blob) {
+        uploadToOneDrive_(cfg, graphToken, cfg.onedriveFolder + '/' + relPath, blob);
+      }
+    });
+  }
+
+  if (!targets.length) {
+    throw new Error('No storage target enabled. Set STORAGE_PROVIDER to "dropbox", "onedrive", or "both".');
+  }
+  return targets;
+}
+
+/** Upload one blob to every configured target. */
+function uploadToAll_(targets, relPath, blob) {
+  for (var i = 0; i < targets.length; i++) {
+    targets[i].upload(relPath, blob);
+  }
+}
+
+/** Human-readable destination label for logs / the summary email. */
+function providerLabel_(cfg) {
+  if (cfg.provider === 'both') return 'Dropbox + OneDrive';
+  return cfg.useOneDrive ? 'OneDrive' : 'Dropbox';
+}
+
+/**
  * Email a short per-run digest when RUN_SUMMARY_EMAIL is configured. Never
  * throws — a failed notification must not fail the archive run itself.
  */
@@ -109,12 +205,13 @@ function maybeSendSummary_(cfg, summary) {
   if (summary.found === 0 && summary.errors.length === 0) return;
 
   try {
+    var dest = providerLabel_(cfg);
     var lines = [
-      'Gmail → Dropbox archive run complete.',
+      'Gmail → ' + dest + ' archive run complete.',
       '',
       'Threads found:    ' + summary.found,
       'Threads archived: ' + summary.threads,
-      'Files uploaded:   ' + summary.files,
+      'Files uploaded:   ' + summary.files + ' (to ' + dest + ')',
       'Errors:           ' + summary.errors.length
     ];
     if (summary.errors.length) {
@@ -123,7 +220,7 @@ function maybeSendSummary_(cfg, summary) {
         lines.push('  • ' + e.subject + ' — ' + e.error);
       });
     }
-    var subject = 'Gmail→Dropbox archive: ' + summary.files + ' file(s), ' +
+    var subject = 'Gmail→' + dest + ' archive: ' + summary.files + ' file(s), ' +
       summary.errors.length + ' error(s)';
     MailApp.sendEmail(cfg.summaryEmail, subject, lines.join('\n'));
   } catch (err) {
@@ -132,17 +229,19 @@ function maybeSendSummary_(cfg, summary) {
 }
 
 /**
- * Archive a single message: body PDF + (optionally) attachments.
- * Returns the number of files uploaded.
+ * Archive a single message: body PDF + (optionally) attachments, to every
+ * configured storage target. Returns the number of distinct files archived
+ * (not multiplied by target count). Paths are relative to each target's own
+ * destination folder, laid out as "<yyyy-MM>/<file>".
  */
-function archiveMessage_(message, cfg, accessToken) {
+function archiveMessage_(message, cfg, targets) {
   var uploaded = 0;
   var baseName = buildBaseName_(message);
-  var folder = cfg.dropboxFolder + '/' + datePart_(message.getDate());
+  var sub = datePart_(message.getDate());  // e.g. "2026-07"
 
   // 1) The email itself as a PDF.
   var pdf = messageToPdf_(message, baseName);
-  uploadToDropbox_(accessToken, folder + '/' + pdf.getName(), pdf);
+  uploadToAll_(targets, sub + '/' + pdf.getName(), pdf);
   uploaded++;
 
   // 2) Real file attachments (inline images excluded).
@@ -154,7 +253,7 @@ function archiveMessage_(message, cfg, accessToken) {
     for (var i = 0; i < attachments.length; i++) {
       var att = attachments[i];
       var attName = baseName + '__att__' + sanitize_(att.getName());
-      uploadToDropbox_(accessToken, folder + '/attachments/' + attName, att.copyBlob());
+      uploadToAll_(targets, sub + '/attachments/' + attName, att.copyBlob());
       uploaded++;
     }
   }
@@ -413,6 +512,134 @@ function normalizeDropboxPath_(path) {
 }
 
 /* ===========================================================================
+ * ONEDRIVE / MICROSOFT 365 (Microsoft Graph)
+ * ======================================================================== */
+
+// Files at or below this size use a single PUT; larger ones use an upload
+// session. OneDrive requires session chunks to be multiples of 320 KiB — 5 MiB
+// (= 16 × 320 KiB) satisfies that and stays under Apps Script's payload limit.
+var ONEDRIVE_SIMPLE_MAX_BYTES = 4 * 1024 * 1024;  // 4 MiB
+var ONEDRIVE_CHUNK_BYTES = 5 * 1024 * 1024;       // 5 MiB (multiple of 320 KiB)
+
+/**
+ * Exchange the Microsoft Graph refresh token for a short-lived access token.
+ * Azure AD rotates refresh tokens, so when a new one comes back we persist it
+ * to Script Properties — otherwise the daily job would eventually stop working.
+ * Public (native) app registrations refresh without a secret; confidential
+ * (web) ones include ONEDRIVE_CLIENT_SECRET.
+ */
+function getGraphAccessToken_(cfg) {
+  var payload = {
+    grant_type: 'refresh_token',
+    refresh_token: cfg.onedriveRefreshToken,
+    client_id: cfg.onedriveClientId,
+    scope: cfg.onedriveScope
+  };
+  if (cfg.onedriveClientSecret) payload.client_secret = cfg.onedriveClientSecret;
+
+  var res = fetchWithRetry_(
+    'https://login.microsoftonline.com/' + encodeURIComponent(cfg.onedriveTenant) + '/oauth2/v2.0/token', {
+      method: 'post',
+      muteHttpExceptions: true,
+      payload: payload
+    });
+  var code = res.getResponseCode();
+  var text = res.getContentText();
+  if (code !== 200) {
+    throw new Error('OneDrive token refresh failed (' + code + '): ' + text);
+  }
+  var json = JSON.parse(text);
+  if (json.refresh_token && json.refresh_token !== cfg.onedriveRefreshToken) {
+    PropertiesService.getScriptProperties().setProperty('ONEDRIVE_REFRESH_TOKEN', json.refresh_token);
+    cfg.onedriveRefreshToken = json.refresh_token;
+  }
+  return json.access_token;
+}
+
+/**
+ * Upload a blob to OneDrive/SharePoint. Small files use a single PUT to
+ * .../root:/<path>:/content; larger files stream through an upload session in
+ * 5 MiB chunks. conflictBehavior=rename avoids clobbering an existing file.
+ */
+function uploadToOneDrive_(cfg, accessToken, path, blob) {
+  var bytes = blob.getBytes();
+  if (bytes.length > ONEDRIVE_SIMPLE_MAX_BYTES) {
+    uploadLargeToOneDrive_(cfg, accessToken, path, bytes);
+  } else {
+    uploadSmallToOneDrive_(cfg, accessToken, path, bytes);
+  }
+}
+
+/** Single-request PUT for files that fit under the simple-upload limit. */
+function uploadSmallToOneDrive_(cfg, accessToken, path, bytes) {
+  var url = graphItemUrl_(cfg, path) + ':/content?@microsoft.graph.conflictBehavior=rename';
+  var res = fetchWithRetry_(url, {
+    method: 'put',
+    contentType: 'application/octet-stream',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + accessToken },
+    payload: bytes
+  });
+  var code = res.getResponseCode();
+  if (code !== 200 && code !== 201) {
+    throw new Error('OneDrive upload failed (' + code + ') for ' + path +
+      ': ' + res.getContentText());
+  }
+}
+
+/** Chunked upload session for files larger than the simple-upload limit. */
+function uploadLargeToOneDrive_(cfg, accessToken, path, bytes) {
+  // 1) Create the session (authenticated).
+  var sessRes = fetchWithRetry_(graphItemUrl_(cfg, path) + ':/createUploadSession', {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + accessToken },
+    payload: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename' } })
+  });
+  if (sessRes.getResponseCode() >= 300) {
+    throw new Error('OneDrive createUploadSession failed (' + sessRes.getResponseCode() +
+      ') for ' + path + ': ' + sessRes.getContentText());
+  }
+  var uploadUrl = JSON.parse(sessRes.getContentText()).uploadUrl;
+
+  // 2) PUT each chunk to the pre-authenticated session URL (no auth header).
+  var total = bytes.length;
+  var offset = 0;
+  while (offset < total) {
+    var end = Math.min(offset + ONEDRIVE_CHUNK_BYTES, total);
+    var res = fetchWithRetry_(uploadUrl, {
+      method: 'put',
+      contentType: 'application/octet-stream',
+      muteHttpExceptions: true,
+      headers: { 'Content-Range': 'bytes ' + offset + '-' + (end - 1) + '/' + total },
+      payload: bytes.slice(offset, end)
+    });
+    var code = res.getResponseCode();
+    // 202 = more chunks expected; 200/201 = final chunk accepted & committed.
+    if (code !== 202 && code !== 200 && code !== 201) {
+      throw new Error('OneDrive chunk upload failed (' + code + ') at offset ' + offset +
+        ' for ' + path + ': ' + res.getContentText());
+    }
+    offset = end;
+  }
+}
+
+/** Graph item URL up to (and including) the addressed path, e.g.
+ *  https://graph.microsoft.com/v1.0/me/drive/root:/Gmail%20Archive/2026-07/x.pdf
+ *  Callers append ":/content" or ":/createUploadSession". */
+function graphItemUrl_(cfg, path) {
+  return 'https://graph.microsoft.com/v1.0' + cfg.onedriveDrivePrefix +
+         '/root:' + encodeGraphPath_(path);
+}
+
+/** Percent-encode each path segment while keeping the slash separators. */
+function encodeGraphPath_(path) {
+  var clean = ('/' + path).replace(/\/{2,}/g, '/');
+  return clean.split('/').map(function (seg) { return encodeURIComponent(seg); }).join('/');
+}
+
+/* ===========================================================================
  * NAMING / SANITIZING HELPERS
  * ======================================================================== */
 function buildBaseName_(message) {
@@ -466,15 +693,25 @@ function getOrCreateLabel_(name) {
  */
 function initConfig() {
   PropertiesService.getScriptProperties().setProperties({
-    DROPBOX_APP_KEY: '',
-    DROPBOX_APP_SECRET: '',
-    DROPBOX_REFRESH_TOKEN: '',
     GMAIL_LABEL: 'Archive/ToDropbox',
-    DROPBOX_FOLDER: '/Gmail Archive',
+    STORAGE_PROVIDER: 'dropbox',   // 'dropbox' | 'onedrive' | 'both'
     PROCESSED_LABEL: 'Archived/Dropbox',
     MAX_THREADS_PER_RUN: '40',
     INCLUDE_ATTACHMENTS: 'true',
-    RUN_SUMMARY_EMAIL: ''   // e.g. 'you@example.com' to get a per-run digest; blank = off
+    RUN_SUMMARY_EMAIL: '',         // e.g. 'you@example.com' to get a per-run digest; blank = off
+
+    // Dropbox (needed when STORAGE_PROVIDER is 'dropbox' or 'both')
+    DROPBOX_APP_KEY: '',
+    DROPBOX_APP_SECRET: '',
+    DROPBOX_REFRESH_TOKEN: '',
+    DROPBOX_FOLDER: '/Gmail Archive',
+
+    // OneDrive / M365 (needed when STORAGE_PROVIDER is 'onedrive' or 'both')
+    ONEDRIVE_CLIENT_ID: '',
+    ONEDRIVE_CLIENT_SECRET: '',     // only for confidential (web) app registrations
+    ONEDRIVE_REFRESH_TOKEN: '',
+    ONEDRIVE_TENANT: 'common',
+    ONEDRIVE_FOLDER: '/Gmail Archive'
   }, false); // false = merge, don't wipe other properties
   Logger.log('Config written. Remember to clear secrets out of initConfig().');
 }
@@ -501,6 +738,10 @@ function removeTriggers() {
 /** Verify Dropbox credentials without touching Gmail. */
 function testDropboxConnection() {
   var cfg = getConfig_();
+  if (!cfg.useDropbox) {
+    Logger.log('Dropbox is not enabled (STORAGE_PROVIDER=%s).', cfg.provider);
+    return;
+  }
   var token = getDropboxAccessToken_(cfg);
   var res = UrlFetchApp.fetch('https://api.dropboxapi.com/2/users/get_current_account', {
     method: 'post',
@@ -510,13 +751,36 @@ function testDropboxConnection() {
   Logger.log('Dropbox account check (%s): %s', res.getResponseCode(), res.getContentText());
 }
 
+/** Verify OneDrive/M365 credentials without touching Gmail. */
+function testOneDriveConnection() {
+  var cfg = getConfig_();
+  if (!cfg.useOneDrive) {
+    Logger.log('OneDrive is not enabled (STORAGE_PROVIDER=%s).', cfg.provider);
+    return;
+  }
+  var token = getGraphAccessToken_(cfg);
+  var res = UrlFetchApp.fetch('https://graph.microsoft.com/v1.0' + cfg.onedriveDrivePrefix, {
+    method: 'get',
+    muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  Logger.log('OneDrive drive check (%s): %s', res.getResponseCode(), res.getContentText());
+}
+
+/** Verify every enabled storage target in one call. */
+function testConnections() {
+  testDropboxConnection();
+  testOneDriveConnection();
+}
+
 /** Dry run: archive at most one message so you can eyeball the result. */
 function testArchiveOne() {
   var cfg = getConfig_();
-  var token = getDropboxAccessToken_(cfg);
+  var targets = buildTargets_(cfg);
   var threads = GmailApp.search('label:' + toSearchLabel_(cfg.gmailLabel) +
     ' -label:' + toSearchLabel_(cfg.processedLabel), 0, 1);
   if (!threads.length) { Logger.log('No unarchived threads found for that label.'); return; }
-  var count = archiveMessage_(threads[0].getMessages()[0], cfg, token);
-  Logger.log('Uploaded %s file(s) from one message (thread NOT marked processed).', count);
+  var count = archiveMessage_(threads[0].getMessages()[0], cfg, targets);
+  Logger.log('Archived %s file(s) from one message to %s (thread NOT marked processed).',
+    count, providerLabel_(cfg));
 }
