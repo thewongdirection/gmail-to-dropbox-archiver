@@ -123,6 +123,59 @@ project (editor, or the one-call helper below).
 
 ---
 
+## Microsoft 365 / OneDrive (`connect-onedrive.mjs`)
+
+To back up to OneDrive/SharePoint (M365), set `STORAGE_PROVIDER` to `onedrive`
+(only M365) or `both` (Dropbox **and** M365), and provide the OneDrive
+credentials. `connect-onedrive.mjs` (zero-dependency, Node 18+) automates the
+Microsoft Graph OAuth once the Azure AD app exists:
+
+```bash
+node connect-onedrive.mjs --client-id <APP_ID> --tenant common
+# confidential (web) app that has a secret:
+ONEDRIVE_CLIENT_ID=… ONEDRIVE_CLIENT_SECRET=… node connect-onedrive.mjs
+```
+
+It runs the authorization-code flow **with PKCE over a localhost loopback**
+(Microsoft retired the paste-a-code flow), verifies the token against your
+drive, and writes `ONEDRIVE_CLIENT_ID` / `ONEDRIVE_REFRESH_TOKEN` /
+`ONEDRIVE_TENANT` / `ONEDRIVE_FOLDER` (+ `STORAGE_PROVIDER`, and
+`ONEDRIVE_CLIENT_SECRET` if you gave one) into `.script-properties.json`. If it
+sees existing Dropbox creds there, it defaults `STORAGE_PROVIDER` to `both` —
+override with `--provider onedrive`.
+
+**Four things it can't do — do them once in the Azure portal
+(<https://portal.azure.com> ▸ Microsoft Entra ID ▸ App registrations):**
+
+1. **Register the app** (New registration). Under *Supported account types*,
+   pick what matches you — personal Microsoft accounts, work/school, or both.
+2. **Add a redirect URI** of type *Mobile and desktop applications* =
+   `http://localhost` (Microsoft ignores the port, so the random loopback port
+   the script uses is fine).
+3. **Add delegated Graph permission** `Files.ReadWrite.All` (or `Files.ReadWrite`)
+   **plus** `offline_access`, and grant/consent to it.
+4. **Click through consent** in the browser the script opens (interactive by
+   design — no password grant).
+
+Then copy the **Application (client) ID** and run the script. Notes:
+
+- **Native vs confidential app:** a *public/native* registration needs no
+  secret (PKCE covers it) and is simplest. A *web/confidential* registration
+  has a client secret — pass it, and it's stored so Apps Script can refresh.
+- **Tenant:** `common` works for most; personal-only accounts can use
+  `consumers`, single-tenant orgs their tenant id.
+- **SharePoint / a specific library:** leave `ONEDRIVE_DRIVE_ID` blank to use
+  the signed-in user's OneDrive, or set it to a drive id to target a SharePoint
+  document library.
+- **Refresh-token rotation:** Azure AD rotates refresh tokens; `Code.gs`
+  re-saves the new one to Script Properties on each run, so the daily job keeps
+  working. (The very first token must be set on the project — see below.)
+
+Flags: `--client-id`, `--client-secret [value]`, `--tenant`, `--scope`,
+`--folder`, `--provider onedrive|both`, `--no-browser`, `--print-only`, `--help`.
+
+---
+
 ## Setting Script Properties in one call (`gen-init-properties.mjs`)
 
 Script Properties can only be written by code *inside* the project — no API sets

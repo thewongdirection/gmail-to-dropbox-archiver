@@ -3,10 +3,13 @@
 Status snapshot for continuing this project in a fresh Claude Code session.
 Last updated: 2026-07-14.
 
-> **Latest session** added upload resilience (retry/backoff on 429 + 5xx with
-> `Retry-After` support), chunked **upload sessions** for large attachments,
-> and an optional per-run **summary email** (`RUN_SUMMARY_EMAIL`). See the
-> "What's DONE" and "How it works" notes below and in `README.md`.
+> **Latest session** added **Microsoft 365 / OneDrive** as a backup target
+> (Microsoft Graph, alongside or instead of Dropbox via `STORAGE_PROVIDER`),
+> with `connect-onedrive.mjs` for the Graph OAuth. Earlier work added upload
+> resilience (retry/backoff on 429 + 5xx with `Retry-After`), chunked **upload
+> sessions** for large attachments, an optional per-run **summary email**
+> (`RUN_SUMMARY_EMAIL`), and full CLI install tooling. See `README.md` /
+> `SETUP-CLI.md`.
 
 ## What this project is
 
@@ -83,6 +86,7 @@ bootstrap.sh      # one-command CLI install, macOS/Linux (clasp + secret prompts
 bootstrap.ps1     # one-command CLI install, Windows PowerShell
 install-via-api.mjs # no-clasp installer via the Apps Script REST API (Node 18+)
 connect-dropbox.mjs # automates the Dropbox OAuth handshake → refresh token (Node 18+)
+connect-onedrive.mjs # automates the M365/OneDrive Graph OAuth → refresh token (Node 18+)
 gen-init-properties.mjs # generates one-call applyScriptProperties() from creds (Node 18+)
 SETUP-CLI.md      # command-line install guide (clasp, clasp run, no-clasp options)
 README.md         # full 15-minute setup guide

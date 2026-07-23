@@ -1,36 +1,43 @@
-# Gmail → Dropbox PDF Archiver
+# Gmail → Cloud PDF Archiver (Dropbox / Microsoft 365)
 
 A [Google Apps Script](https://developers.google.com/apps-script) that, once a
 day, finds every Gmail thread carrying a label you choose, renders each message
-to a **PDF**, and uploads it — together with any file **attachments** — to a
-folder in **Dropbox**. Threads are tagged after archiving so they're never
-processed twice.
+to a **PDF**, and uploads it — together with any file **attachments** — to
+**Dropbox**, **Microsoft 365 (OneDrive/SharePoint)**, or **both**. Threads are
+tagged after archiving so they're never processed twice.
 
 ```
 Gmail (label: Archive/ToDropbox)
         │  daily trigger ~2 AM
         ▼
-  render message → PDF  ──►  Dropbox:/Gmail Archive/2026-07/2026-07-14_1032_Subject_ab12cd34.pdf
-  copy attachments      ──►  Dropbox:/Gmail Archive/2026-07/attachments/…__att__report.xlsx
-        │
+  render message → PDF  ──►  <cloud>:/Gmail Archive/2026-07/2026-07-14_1032_Subject_ab12cd34.pdf
+  copy attachments      ──►  <cloud>:/Gmail Archive/2026-07/attachments/…__att__report.xlsx
+        │                    (<cloud> = Dropbox and/or OneDrive, per STORAGE_PROVIDER)
         ▼
   thread gets label: Archived/Dropbox  (skipped on future runs)
 ```
 
 - **No servers, no cost** — runs entirely inside Google's infrastructure.
+- **Pick your storage** — Dropbox, OneDrive/M365, or both, via one setting.
 - **Secrets stay out of the code** — all credentials live in Script Properties.
-- **Durable auth** — uses a Dropbox *refresh token*, so the daily job keeps
-  working indefinitely (short-lived access tokens expire after ~4 hours).
+- **Durable auth** — uses provider *refresh tokens*, so the daily job keeps
+  working indefinitely (short-lived access tokens expire after a few hours).
 
 ---
 
 ## What you'll set up
 
-1. A **Dropbox app** (to get an app key, secret, and refresh token).
+1. A **storage app** for your provider(s):
+   - Dropbox — an app key, secret, and refresh token, **and/or**
+   - Microsoft 365 — an Azure AD app (client) id and a Graph refresh token.
 2. A **Gmail label** whose threads you want archived.
 3. This **Apps Script project** with a few Script Properties and a daily trigger.
 
-Total time: ~15 minutes.
+Total time: ~15 minutes per provider.
+
+> The sections below walk through **Dropbox**. For **Microsoft 365 / OneDrive**,
+> see [`SETUP-CLI.md` § Microsoft 365 / OneDrive](./SETUP-CLI.md#microsoft-365--onedrive-connect-onedrivemjs)
+> and set `STORAGE_PROVIDER` to `onedrive` (or `both`).
 
 ---
 
@@ -126,20 +133,55 @@ paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 
 ### Script Properties
 
+**Common**
+
+| Key                     | Required | Example / default          | Purpose |
+|-------------------------|----------|----------------------------|---------|
+| `GMAIL_LABEL`           | ✅       | `Archive/ToDropbox`        | Label whose threads are candidates to archive |
+| `STORAGE_PROVIDER`      | ➖       | `dropbox` (default)        | `dropbox` \| `onedrive` \| `both` |
+| `ARCHIVE_FOLDER`        | ➖       | `/Gmail Archive` (default) | Destination folder for **every** provider |
+| `SUBJECT_REGEX`         | ➖       | `^(Invoice\|Receipt)\b` (blank) | Only archive messages whose **subject** matches; blank = all |
+| `SUBJECT_REGEX_FLAGS`   | ➖       | `i` (default)              | Regex flags; `""` = case-sensitive (`g`/`y` ignored) |
+| `PROCESSED_LABEL`       | ➖       | `Archived/Dropbox`         | Applied after a thread is handled |
+| `MAX_THREADS_PER_RUN`   | ➖       | `40`                       | Per-run safety cap |
+| `INCLUDE_ATTACHMENTS`   | ➖       | `true`                     | Also upload file attachments |
+| `RUN_SUMMARY_EMAIL`     | ➖       | `you@example.com` (blank)  | Email a per-run digest; blank = off |
+
+**Dropbox** (required when `STORAGE_PROVIDER` is `dropbox` or `both`)
+
 | Key                     | Required | Example / default          | Purpose |
 |-------------------------|----------|----------------------------|---------|
 | `DROPBOX_APP_KEY`       | ✅       | `abc123…`                  | Dropbox app key |
 | `DROPBOX_APP_SECRET`    | ✅       | `def456…`                  | Dropbox app secret |
 | `DROPBOX_REFRESH_TOKEN` | ✅       | `sl.B7…`                   | From step 1.4 |
-| `GMAIL_LABEL`           | ✅       | `Archive/ToDropbox`        | Label to archive |
-| `DROPBOX_FOLDER`        | ➖       | `/Gmail Archive` (default) | Destination folder in Dropbox |
-| `PROCESSED_LABEL`       | ➖       | `Archived/Dropbox`         | Applied after archiving |
-| `MAX_THREADS_PER_RUN`   | ➖       | `40`                       | Per-run safety cap |
-| `INCLUDE_ATTACHMENTS`   | ➖       | `true`                     | Also upload file attachments |
-| `RUN_SUMMARY_EMAIL`     | ➖       | `you@example.com` (blank)  | Email a per-run digest; blank = off |
+| `DROPBOX_FOLDER`        | ➖       | (falls back to `ARCHIVE_FOLDER`) | Per-provider folder override |
 
-> If you use a Dropbox **App folder** app, `DROPBOX_FOLDER` is relative to that
-> app folder (which lives at `Apps/<your-app>/` in your Dropbox).
+**Microsoft 365 / OneDrive** (required when `STORAGE_PROVIDER` is `onedrive` or `both`)
+
+| Key                      | Required | Example / default          | Purpose |
+|--------------------------|----------|----------------------------|---------|
+| `ONEDRIVE_CLIENT_ID`     | ✅       | `1234abcd-…`               | Azure AD app (client) id |
+| `ONEDRIVE_REFRESH_TOKEN` | ✅       | `0.AXoA…`                  | Graph refresh token (auto-rotated) |
+| `ONEDRIVE_CLIENT_SECRET` | ➖       | `xyz…`                     | Only for confidential (web) apps |
+| `ONEDRIVE_TENANT`        | ➖       | `common` (default)         | `common` \| `organizations` \| `consumers` \| tenant id |
+| `ONEDRIVE_SCOPE`         | ➖       | `offline_access Files.ReadWrite.All` | OAuth scope |
+| `ONEDRIVE_FOLDER`        | ➖       | (falls back to `ARCHIVE_FOLDER`) | Per-provider folder override |
+| `ONEDRIVE_DRIVE_ID`      | ➖       | (blank = your OneDrive)    | Target a SharePoint document library |
+
+> **Choosing what gets archived.** `GMAIL_LABEL` selects candidate *threads*;
+> `SUBJECT_REGEX` (optional) then narrows to individual *messages* whose subject
+> matches. Threads are still tagged `PROCESSED_LABEL` once handled — even when no
+> message matched — so non-matching threads aren't re-scanned every run.
+>
+> **Destination folder.** Set `ARCHIVE_FOLDER` once and it applies to Dropbox
+> and OneDrive alike; `DROPBOX_FOLDER` / `ONEDRIVE_FOLDER` override it per
+> provider. **Upgrading?** If you set `DROPBOX_FOLDER` (or `ONEDRIVE_FOLDER`) on
+> an earlier version, that value still wins over `ARCHIVE_FOLDER` — clear it if
+> you now want the single-folder setting to take effect.
+>
+> For a Dropbox **App folder** app, folders are relative to `Apps/<your-app>/`.
+> The easiest way to fill in the provider blocks is `connect-dropbox.mjs` /
+> `connect-onedrive.mjs` (see [`SETUP-CLI.md`](./SETUP-CLI.md)).
 
 ---
 
@@ -148,11 +190,12 @@ paste) — see [`SETUP-CLI.md`](./SETUP-CLI.md).
 Run these functions from the Apps Script editor's **Run** menu (the first run
 will prompt you to authorize the Gmail/external-request scopes — approve them):
 
-1. **`testDropboxConnection`** — confirms your Dropbox credentials work.
-   Check **Executions / Logs**; you should see your account email.
+1. **`testConnections`** — confirms every enabled provider's credentials work
+   (calls `testDropboxConnection` and `testOneDriveConnection`; each no-ops if
+   that provider isn't enabled). Check **Executions / Logs**.
 2. **`testArchiveOne`** — archives a single labeled message end-to-end so you
-   can verify the PDF and attachments show up in Dropbox. (It does *not* mark
-   the thread processed, so you can re-run it.)
+   can verify the PDF and attachments show up in each target. (It does *not*
+   mark the thread processed, so you can re-run it.)
 3. **`setupDailyTrigger`** — installs the daily time-based trigger
    (runs ~2 AM in the project's timezone). Run once.
 
@@ -166,22 +209,35 @@ To stop the automation, run **`removeTriggers`**.
 
 - **Selection** — `GmailApp.search('label:X -label:Processed')` returns only
   threads that still need archiving. Processed threads are excluded by the
-  label, so runs are idempotent and cheap.
+  label, so runs are idempotent and cheap. If `SUBJECT_REGEX` is set, each
+  message's subject is then tested against it (Gmail search has no regex, so
+  this filter runs in code) and only matching messages are archived.
 - **PDF** — each message's HTML body is wrapped with a small header table
   (Subject / From / To / Cc / Date) and converted via
   `Utilities.newBlob(html).getAs('application/pdf')`.
-- **Upload** — `files/upload` on `content.dropboxapi.com`, with the request
-  parameters passed in the `Dropbox-API-Arg` header (non-ASCII escaped so
-  unicode filenames work). `mode=add` + `autorename=true` never overwrites.
-  Files larger than one 8 MB chunk are streamed via a Dropbox **upload session**
-  (`start` → `append_v2` → `finish`) so big attachments don't hit the
-  single-request cap.
-- **Resilience** — every Dropbox call goes through a retry wrapper that backs
+- **Targets** — `STORAGE_PROVIDER` selects Dropbox, OneDrive, or both. Each
+  enabled provider's access token is resolved once at the start of a run (so a
+  bad credential fails fast), and every file is uploaded to every target under
+  `<folder>/<yyyy-MM>/…`.
+- **Folders auto-created** — the destination folder (and its `yyyy-MM` /
+  `attachments` subfolders) is created on demand if it doesn't exist. Dropbox
+  does this itself on upload; for OneDrive the script creates each missing level
+  via Graph first (cached per run), since Graph uploads 404 on a missing parent.
+- **Dropbox upload** — `files/upload` on `content.dropboxapi.com`, with request
+  parameters in the `Dropbox-API-Arg` header (non-ASCII escaped so unicode
+  filenames work). `mode=add` + `autorename=true` never overwrites. Files larger
+  than one 8 MB chunk stream via an **upload session** (`start` → `append_v2` →
+  `finish`).
+- **OneDrive upload** — Microsoft Graph. Small files `PUT …/root:/<path>:/content`;
+  larger files stream through an **upload session** in 5 MiB chunks
+  (`conflictBehavior=rename`). The Graph refresh token is auto-rotated: Azure AD
+  hands back a fresh one, which the script re-saves to Script Properties.
+- **Resilience** — every provider call goes through a retry wrapper that backs
   off and retries on transient `429` (rate-limit) and `5xx` errors, honoring the
   `Retry-After` header. Persistent failures still surface as thrown errors.
-- **Dedup** — after all of a thread's messages upload successfully, the thread
-  gets the processed label. If any upload throws, the thread is left untagged
-  and retried on the next run.
+- **Dedup** — after all of a thread's messages upload to *every* target, the
+  thread gets the processed label. If any upload throws, the thread is left
+  untagged and retried on the next run.
 - **Run summary (optional)** — set `RUN_SUMMARY_EMAIL` to receive a short digest
   after each run (threads found/archived, files uploaded, and any per-thread
   errors). It's skipped on quiet no-op runs to avoid inbox noise. This uses the
@@ -200,10 +256,9 @@ To stop the automation, run **`removeTriggers`**.
 - **Inline images** — images embedded in the email body via `cid:` references
   may not render inside the PDF. Real file attachments are uploaded separately
   and are unaffected.
-- **File size** — small files use the single-request upload path; anything
-  larger than an 8 MB chunk automatically switches to a chunked upload session,
-  so large attachments upload reliably within Apps Script's per-request payload
-  limit.
+- **File size** — small files use a single request; larger ones switch to a
+  chunked upload session (Dropbox above 8 MB, OneDrive above 4 MB), so large
+  attachments upload reliably within Apps Script's per-request payload limit.
 
 ## Security
 
@@ -224,6 +279,7 @@ To stop the automation, run **`removeTriggers`**.
 | `bootstrap.ps1`     | One-command CLI install, Windows PowerShell |
 | `install-via-api.mjs` | No-clasp installer using the Apps Script REST API (Node 18+) |
 | `connect-dropbox.mjs` | Automates the Dropbox OAuth handshake → refresh token (Node 18+) |
+| `connect-onedrive.mjs` | Automates the Microsoft 365 / OneDrive OAuth → refresh token (Node 18+) |
 | `gen-init-properties.mjs` | Generates a one-call `applyScriptProperties()` from your creds (Node 18+) |
 | `SETUP-CLI.md`      | Command-line install guide (clasp, `clasp run`, no-clasp options) |
 | `.gitignore`        | Keeps clasp creds / secrets out of git |
